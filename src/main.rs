@@ -1,29 +1,25 @@
-use axum::{routing::get, Router};
-use std::net::SocketAddr;
-use tokio::net::TcpListener;
+use anyhow::Result;
+use std::path::PathBuf;
 
-use optimo::routes;
-use optimo::state::AppState;
+mod ocrys;
+mod state;
+mod state_bridge;
+mod task;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
-    
-// TEMP: routing is still defined here.
-// This will move to a dedicated router module
-// once application boundaries are finalized.
+async fn main() -> Result<()> {
+    // Bootstrap the application state (paths, runtime dirs).
+    let state = crate::state::AppState::new().await?;
 
-    let state = AppState::new().await;
+    // CLI minimal: pass file paths as args.
+    let docs: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).collect();
+    if docs.is_empty() {
+        eprintln!("Usage: optimo <file1> <file2> ...");
+        return Ok(());
+    }
 
-    let app = Router::new()
-        .route("/health", get(routes::health::health))
-        .with_state(state);
-
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-    tracing::info!("Listening on {}", addr);
-
-    let listener = TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    // Orchestrate: delegate CPU-bound work to the worker boundary.
+    task::process_documents(&state, docs).await?;
 
     Ok(())
 }

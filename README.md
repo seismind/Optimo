@@ -46,6 +46,37 @@ once its architectural principles and boundaries are fully validated.
 Early stage.
 The focus is on structure, not surface area.
 
+## OCR Processing Model
+
+Optimo uses a deterministic, industrial OCR pipeline designed for reliability,
+not heuristics or machine learning.
+
+### Parallel Map (Rayon)
+
+OCR is CPU-bound. For this reason, Optimo deliberately exits the async runtime
+(Tokio) and uses Rayon to distribute OCR variants across all available CPU cores.
+
+Each document is processed using multiple OCR variants (contrast, rotation, etc.)
+in parallel.
+
+### Deterministic Reduce
+
+OCR results are merged using a deterministic reduce step based on:
+
+- textual similarity (token overlap)
+- confidence comparison
+- explicit disagreement preservation
+
+No probabilistic or learning-based behavior is involved.
+
+### StateBridge: Selective Memory
+
+Only meaningful outcomes (conflicts, low confidence, convergence failures)
+are persisted.
+
+The database is treated as a memory of *events worth remembering*,
+not a raw data dump.
+
 ---
 
 Built with Rust, Axum and discipline.

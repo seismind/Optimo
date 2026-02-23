@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::path::PathBuf;
 use tokio::task::JoinSet;
+use serde_json;
 
 use crate::ocrys;
 use crate::state::AppState;
@@ -66,13 +67,12 @@ async fn process_one_document(state: &AppState, doc: PathBuf) -> Result<String> 
 
     let preview = preview_document(&reduced_doc, 200);
 
-    Ok(format!(
-        r#"{{"source":"{}","decision":"{}","lines":{},"preview":"{}"}}"#,
-        reduced_doc.source,
-        decision,
-        line_count,
-        preview
-    ))
+    Ok(serde_json::to_string(&serde_json::json!({
+        "source": reduced_doc.source,
+        "decision": decision,
+        "lines": line_count,
+        "preview": preview
+    }))?)
 }
 
 /// MAP + REDUCE (CPU-bound)
@@ -91,7 +91,7 @@ fn cpu_map_reduce_ocr(
     let docs: Vec<OCRDocument> = variants
         .par_iter()
         .map(|variant| {
-            ocrys::tesseract::run_tesseract(doc, run_dir, lang, variant)
+            ocrys::run_ocr(doc, run_dir, lang, variant)
                 .with_context(|| format!("OCR failed for variant {}", variant))
         })
         .collect::<Result<Vec<_>>>()?;

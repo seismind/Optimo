@@ -77,6 +77,20 @@ are persisted.
 The database is treated as a memory of *events worth remembering*,
 not a raw data dump.
 
+### Observation Module
+
+The system is designed to *observe* itself. Each OCR processing decision is 
+recorded as an `OcrObservation` — a durable, validated record containing:
+
+- Unique ID and document tracking (for stable re-run detection)
+- Final value, confidence, and iterations count
+- Status (Converged, Ambiguous, Failed) with severity levels
+- Reason codes for failures (e.g. "low_confidence", "conflict", "geometry_rejected")
+- Timestamps and human-readable notes (bounded, optional)
+
+Every observation is validated before persistence to prevent SQLite from 
+becoming a trash bin. This enables dashboards, alerts, and deterministic replay.
+
 ---
 
 Built with Rust, Axum and discipline.

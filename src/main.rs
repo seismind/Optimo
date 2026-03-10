@@ -5,6 +5,8 @@ mod ocrys;
 mod state;
 mod state_bridge;
 mod task;
+mod reducer;
+mod observation;
 
 #[tokio::main]
 async fn main() -> Result<()> {

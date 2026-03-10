@@ -57,3 +57,4 @@ fn text_to_document(raw: &str, source: &Path) -> OCRDocument {
         }],
     }
 }
+

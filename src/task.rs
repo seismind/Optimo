@@ -15,7 +15,8 @@ use serde_json;
 use crate::ocrys;
 use crate::state::AppState;
 use crate::state_bridge::StateBridge;
-use crate::ocrys::types::{OCRDocument, OCRLine};
+use crate::ocrys::types::OCRDocument;
+use crate::reducer;
 
 /// Entry point from main.rs
 pub async fn process_documents(state: &AppState, docs: Vec<PathBuf>) -> Result<()> {
@@ -96,69 +97,8 @@ fn cpu_map_reduce_ocr(
         })
         .collect::<Result<Vec<_>>>()?;
 
-    // ---- REDUCE ----
-    reduce_documents(docs)
-}
-
-/// Deterministic reducer over multiple OCRDocuments
-fn reduce_documents(docs: Vec<OCRDocument>) -> Result<OCRDocument> {
-    let mut base = docs
-        .into_iter()
-        .next()
-        .context("no OCR documents to reduce")?;
-
-    for page in &mut base.pages {
-        page.lines = reduce_lines(std::mem::take(&mut page.lines));
-    }
-
-    Ok(base)
-}
-use std::collections::HashSet;
-
-fn normalize_for_compare(s: &str) -> String {
-    s.to_lowercase()
-        .replace(|c: char| !c.is_alphanumeric() && c != ' ', "")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn similarity(a: &str, b: &str) -> f32 {
-    let a_tokens: HashSet<_> = a.split_whitespace().collect();
-    let b_tokens: HashSet<_> = b.split_whitespace().collect();
-
-    let intersection = a_tokens.intersection(&b_tokens).count() as f32;
-    let union = a_tokens.union(&b_tokens).count() as f32;
-
-    if union == 0.0 { 0.0 } else { intersection / union }
-}
-
-/// Reduce OCRLine candidates into a single coherent set
-fn reduce_lines(lines: Vec<OCRLine>) -> Vec<OCRLine> {
-    let mut reduced: Vec<OCRLine> = Vec::new();
-
-    'outer: for line in lines {
-        let norm = normalize_for_compare(&line.text);
-
-        for existing in &mut reduced {
-            let existing_norm = normalize_for_compare(&existing.text);
-            let sim = similarity(&norm, &existing_norm);
-
-            if sim >= 0.7 {
-                let new_conf = line.confidence.unwrap_or(0.0);
-                let old_conf = existing.confidence.unwrap_or(0.0);
-
-                if new_conf > old_conf {
-                    *existing = line;
-                }
-                continue 'outer;
-            }
-        }
-
-        reduced.push(line);
-    }
-
-    reduced
+    // ---- REDUCE (delegated to reducer module) ----
+    reducer::reduce_documents(docs)
 }
 
 /// Small preview helper
@@ -186,5 +126,3 @@ fn sanitize(s: &str) -> String {
         .replace('\n', " ")
         .replace('\r', " ")
 }
-
-

@@ -2,6 +2,9 @@ use anyhow::Result;
 use std::path::PathBuf;
 
 mod ocrys;
+mod event;
+mod reducer_state;
+mod snapshot;
 mod state;
 mod state_bridge;
 mod task;

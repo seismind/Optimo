@@ -38,6 +38,27 @@ This allows the core logic to remain deterministic and replayable.
 
 ---
 
+## Non-Negotiable Invariants
+
+1. **Reducer purity**  
+  The reducer must remain pure, deterministic, and free of side effects.
+
+2. **External metadata injection**  
+  Timestamps, ids, and other non-deterministic metadata must come from the runtime layer.
+
+3. **Persistence boundary isolation**  
+  Storage concerns must stay outside the core and pass only through the bridge.
+
+4. **Derived event model**  
+  Events must be derived from reducer results, not emitted as computation side effects.
+
+5. **First-class observability**  
+  Observations are part of the system contract and must remain structured and auditable.
+
+See the full decision log: [docs/DECISIONS.md](docs/DECISIONS.md).
+
+---
+
 # Project Structure
 
 ```text

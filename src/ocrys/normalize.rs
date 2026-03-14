@@ -1,5 +1,6 @@
 use super::types::*;
 
+#[allow(dead_code)]
 pub fn normalize_text(raw: &str, source: &str) -> OCRDocument {
     let lines = raw
         .lines()

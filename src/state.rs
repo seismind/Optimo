@@ -3,9 +3,11 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct AppState {
+    #[allow(dead_code)]
     pub root_dir: PathBuf,
     pub data_dir: PathBuf,
     pub ocrys_dir: PathBuf,
+    #[allow(dead_code)]
     pub db_path: PathBuf,
     pub ocr_lang: String,
 }

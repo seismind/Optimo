@@ -155,12 +155,141 @@ OCR is treated as an input generator rather than the defining capability of the 
 
 ---
 
+## ADR-0007 — Mathematical Formalization of the Core Triad
+
+### Context
+
+The architecture had clear invariants, but lacked a shared formal model for:
+
+- deterministic state evolution
+- structural checkpointing
+- semantic decision observation
+
+Without this model, replay and convergence proofs risk becoming implementation-specific.
+
+### Decision
+
+Formalize the triad as:
+
+- $R$: deterministic fold over state and documents
+- $\Pi$: snapshot projection with runtime metadata injection
+- $\Omega$: observation projection with runtime metadata injection
+
+and maintain persistence as external boundary $B$.
+
+Reference document:
+
+```text
+docs/TRIAD_FORMALISM.md
+```
+
+### Consequences
+
+- roadmap items (replay engine, cognitive observation layer, convergence theorem) now have a stable formal base
+- implementation reviews can be validated against explicit morphisms and invariants
+- boundary violations (metadata generation in core) become straightforward to detect
+
+---
+
+## ADR-0008 — Deterministic Replay with Rigorous Snapshot Hydration
+
+### Context
+
+Full replay capability requires checkpoint-based initialization to scale beyond pure genesis replay.
+This demands a clear contract for snapshot rehydration that:
+
+- never leaves state in an inconsistent or "zombie" condition
+- fails fast and explicitly before any core contamination
+- distinguishes between projection (what to show) and rehydration (what's needed for fold resume)
+
+### Decision
+
+1. Snapshot now explicitly carries two independent payloads:
+   - projection: fields, confidence, iterations (for audit/reporting)
+   - rehydration: source + cluster_groups (minimal canonical state for deterministic fold restart)
+
+2. From-snapshot hydration is rigorous:
+   - validates schema_version early
+   - enforces document_id/source coherence
+   - recomputes metrics and validates confidence match
+   - fails loudly if rehydration payload is missing or invalid
+
+3. Replay engine ensures:
+   - deterministic event ordering (timestamp, then id)
+   - genesis replay (events only) path
+   - checkpoint + tail replay (latest snapshot + events after cutoff)
+
+### Consequences
+
+- snapshot corruption cannot silently contaminate the fold
+- genesis and checkpoint+tail replay produce identical final state (tested)
+- schema evolution is now feasible via versioned migrations
+- integrity chain (snapshot_hash + tail_chain_hash) is architected for future audit
+
+---
+
+## ADR-0009 — Confidence Formula and Snapshot Schema v1
+
+### Context
+
+The reducer produces a `confidence` score, but its derivation was implicit and undocumented.
+Additionally, snapshot fields used UI-like string keys (`page_1_line_1`) and a loose `BTreeMap`
+that was not queryable in SQLite.
+
+### Decision
+
+**Confidence formula — Weighted Cluster Plurality Ratio:**
+
+For each line position `(page, line_index)` across all OCR variants:
+
+```
+line_convergence(pos) = max_cluster_size(pos) / total_candidates(pos)
+```
+
+where `max_cluster_size` is the count of candidates in the winning (plurality) cluster,
+and `total_candidates` is the total count of candidates across all clusters at that position.
+
+Global confidence:
+
+```
+confidence = mean(line_convergence) over all positions
+           = (Σ line_convergence) / N_positions
+```
+
+Reported in basis points internally (`convergence_score_bps` ∈ [0, 10000]).
+Exported as `f32` in [0.0, 1.0].
+
+This is a **plurality agreement ratio**: it measures what fraction of OCR candidates
+agree on the winning answer, on average across all extracted line positions.
+
+It is NOT entropy, NOT a weighted average of per-word Tesseract confidence scores,
+and NOT a geometric mean. Those are potential future refinements (see below).
+
+**Snapshot schema v1 — Typed projection:**
+
+- `fields: BTreeMap<String, String>` removed from `ReducerSnapshot`
+- replaced by `lines: Vec<SnapshotLine>` where each element is `{ page, line, text }`
+- `content_hash: Uuid` added: deterministic fingerprint over `(document_id, sorted lines, iterations)`
+- `compute_content_hash` is cardinality-sensitive: duplicate lines are preserved and affect the hash by design
+- SQLite schema introduced: `document_snapshots` + `snapshot_lines` tables
+- `SqliteStore` in `state_bridge.rs` persists both tables on every run alongside JSONL
+
+### Consequences
+
+- confidence formula is now auditable and testable against the implementation
+- snapshot lines are directly queryable in SQLite (`SELECT * FROM snapshot_lines WHERE page = 1`)
+- content_hash enables corruption detection before rehydration
+- JSONL (human-readable) and SQLite (queryable) are both written on every run
+- future confidence improvements (entropy, Tesseract scores, weighted purity) can be grafted in without changing the schema
+
+---
+
 ## Future ADR Candidates
 
 Potential upcoming decisions:
 
-- introduction of SQLite storage backend
 - distributed reducer execution model
 - deterministic ID strategy across services
 - observation schema versioning
+- confidence v2: incorporate per-line Tesseract confidence scores via weighted cluster purity
 - DSL-based document parsing layer

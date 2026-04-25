@@ -1,7 +1,8 @@
 use crate::ocrys::types::OCRDocument;
-use crate::reducer_state::ReducerState;
-use crate::snapshot::ReducerSnapshot;
+use crate::aggregate_state::ReducerState;
+use crate::snapshot::{ReducerSnapshot, SnapshotMetadata};
 use crate::observation::{OcrObservation, ObservationStatus, Severity};
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 // TODO: snapshot persistence
@@ -26,19 +27,28 @@ pub fn reduce_documents(docs: Vec<OCRDocument>) -> anyhow::Result<ReducerState> 
 }
 
 #[allow(dead_code)]
-pub fn snapshot_documents(docs: Vec<OCRDocument>) -> anyhow::Result<ReducerSnapshot> {
+pub fn snapshot_documents(
+    docs: Vec<OCRDocument>,
+    metadata: SnapshotMetadata,
+) -> anyhow::Result<ReducerSnapshot> {
     let state = reduce_documents(docs)?;
-    Ok(state.snapshot())
+    Ok(state.snapshot_with_metadata(metadata))
 }
 
-pub fn emit_observation(state: &ReducerState) -> anyhow::Result<Option<OcrObservation>> {
+pub fn emit_observation(
+    state: &ReducerState,
+    observation_id: Uuid,
+    created_at: DateTime<Utc>,
+) -> anyhow::Result<Option<OcrObservation>> {
     let status = state.compute_convergence();
     if status == ObservationStatus::Converged {
         return Ok(None);
     }
 
     let mut observation = OcrObservation::new(
+        observation_id,
         Uuid::new_v5(&Uuid::NAMESPACE_URL, state.source.as_bytes()),
+        created_at,
         "reducer.document",
         status,
     );

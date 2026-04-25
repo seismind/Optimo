@@ -1,0 +1,17 @@
+INVOICE 2026-04-22
+Invoice Number: INV-2026-0001234
+Date: 22/04/2026
+
+ITEMS
+Item                  Qty   Unit Price    Total
+─────────────────────────────────────────────────
+Professional Services  50.00  45.50 EUR      2275.00 EUR
+Cloud Infrastructure   1.00   1200.00 EUR    1200.00 EUR
+Support & Maintenance  3.00   150.00 EUR     450.00 EUR
+
+Subtotal:                                     3925.00 EUR
+VAT (22%):                                     863.50 EUR
+────────────────────────────────────────────
+TOTAL DUE:                                   4788.50 EUR
+
+Payment Terms: Net 30 days

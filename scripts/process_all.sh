@@ -18,7 +18,7 @@ fi
 
 args=()
 for f in "${files[@]}"; do
-  args+=("/workspace/$f")
+  args+=("/workspace/$DIR/$f")
 done
 
 # Run docker with user mapping to avoid root-owned outputs

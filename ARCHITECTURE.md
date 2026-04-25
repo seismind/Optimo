@@ -198,6 +198,20 @@ In practical terms:
 
 ---
 
+## Formal Triad Model
+
+The computation contract is formalized as a triad:
+
+- deterministic fold: `ReducerState`
+- structural projection: `ReducerSnapshot`
+- semantic projection: `OcrObservation`
+
+See the mathematical formalization in:
+
+- `docs/TRIAD_FORMALISM.md`
+
+---
+
 ## Design Goal
 
 The long-term goal is not simply to process OCR.

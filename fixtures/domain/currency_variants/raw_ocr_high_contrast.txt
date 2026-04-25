@@ -1,0 +1,5 @@
+Currency Conversion Examples
+
+Amount in Euro: 1000.00 €
+Amount in USD: USD 1000
+Amount in EUR: EUR 1000

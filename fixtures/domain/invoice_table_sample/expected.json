@@ -1,0 +1,51 @@
+{
+  "test_case": "invoice_table_sample",
+  "description": "Invoice with itemized table. Tests OCR variant agreement on decimal numbers (comma vs dot), line merging, confidence scoring.",
+  "source": "fixtures/domain/invoice_table_sample",
+  "variants": ["original", "high_contrast", "rotated"],
+  "expectations": {
+    "minimum_convergence_score_bps": 7000,
+    "comment_convergence": "High agreement on invariant lines like invoice number, dates, itemized rows",
+    "maximum_ambiguity_score_bps": 3000,
+    "comment_ambiguity": "Minor variants in decimal format (45,50 vs 45.50) and support line text (Support & Maintenance vs Support and Maint.)",
+    "expected_page_count": 1,
+    "expected_status": "ambiguous",
+    "comment_status": "Converged on main items but ambiguous on formatting details"
+  },
+  "key_assertions": [
+    {
+      "line": "INVOICE 2026-04-22",
+      "expected_cluster_size": 3,
+      "comment": "All 3 variants agree exactly"
+    },
+    {
+      "line": "INV-2026-0001234",
+      "expected_cluster_size": 3,
+      "comment": "Invoice number unanimous"
+    },
+    {
+      "line": "Professional Services",
+      "expected_cluster_size": 3,
+      "comment": "Line item unanimous despite surrounding variation"
+    },
+    {
+      "line_pattern": "45,50|45.50",
+      "expected_normalization": "45.50",
+      "expected_cluster_size": 2,
+      "comment": "Two variants use comma, one uses dot. Normalized form is unified."
+    },
+    {
+      "line": "Support & Maintenance",
+      "variants_with_this_line": ["original", "high_contrast"],
+      "expected_cluster_size": 2,
+      "comment": "Rotated variant abbreviates; still recognizes the row"
+    },
+    {
+      "line": "TOTAL DUE",
+      "expected_cluster_size": 1,
+      "variants_with_this_line": ["original", "high_contrast"],
+      "comment": "Rotated says TOTAL instead. Lower confidence on this line."
+    }
+  ],
+  "regression_notes": "If convergence_score_bps < 7000, OCR pre-processing changed. If ambiguity_score_bps > 3000, formatter is too strict."
+}

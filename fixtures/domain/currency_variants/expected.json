@@ -1,0 +1,17 @@
+{
+  "fixture": "currency_variants",
+  "description": "Same currency amount in 3 different formats (€1000, 1000 EUR, 1000 USD)",
+  "expected_lines_count": 5,
+  "expected_pages_count": 1,
+  "expected_convergence_score_bps_min": 6000,
+  "convergence_notes": "Symbol placement varies; numeric value (1000) should dominate clustering",
+  "key_lines": [
+    "Currency Conversion Examples",
+    "1000"
+  ],
+  "test_focus": [
+    "currency symbol normalization",
+    "semantic equivalence of numeric values",
+    "variant symbol ordering (€1000 vs 1000€ vs 1000 EUR)"
+  ]
+}

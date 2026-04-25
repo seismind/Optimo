@@ -57,6 +57,8 @@ This allows the core logic to remain deterministic and replayable.
 
 See the full decision log: [docs/DECISIONS.md](docs/DECISIONS.md).
 
+Mathematical triad formalization: [docs/TRIAD_FORMALISM.md](docs/TRIAD_FORMALISM.md).
+
 ---
 
 # Project Structure
@@ -202,6 +204,18 @@ Requires a local Tesseract installation.
 cargo run -- fixtures/sample.png
 ```
 
+Replay mode (skeleton):
+
+```
+cargo run -- --replay
+```
+
+Replay for one document checkpoint:
+
+```
+cargo run -- --replay <document_uuid>
+```
+
 Batch process a folder:
 
 ```
@@ -259,12 +273,50 @@ Example record:
 
 ---
 
-# Notes
+# Replay Engine Status (Apr 2026)
+
+## ✅ Implemented
+
+- **Deterministic replay from genesis**: Events ordered by timestamp + id, folded with pure reducer
+- **Checkpoint + tail replay**: Load latest snapshot, hydrate state, apply tail events
+- **Rigorous snapshot hydration**: 
+  - Validates schema_version, document_id/source coherence, confidence match
+  - Fails explicitly before any reducer contamination
+  - Distinguishes projection (reporting) from rehydration (fold resume)
+- **Equivalence test**: Genesis and checkpoint+tail replay produce identical final state ✓
+- **Failure mode tests**: 5 tests guarantee no panic, no zombie state on corruption
+
+## 🧪 Test Suite
+
+```
+cargo test replay::tests
+```
+
+- `final_state_is_identical_genesis_vs_checkpoint_plus_tail`: proves equivalence
+- `snapshot_must_fail_before_hydration_when_rehydration_missing`: guards payload completeness
+- `snapshot_must_fail_on_document_id_source_mismatch`: guards cross-document contamination
+- `snapshot_must_fail_on_empty_source`: guards invalid hydration input
+- `snapshot_must_fail_on_confidence_mismatch_after_recompute`: guards metric consistency
+
+All 5 tests **pass** ✓
+
+## 📋 Next Steps (Architected)
+
+1. **Schema Evolution**: versioned migrations for snapshot format changes
+2. **Integrity Hash Chain**: snapshot_hash + tail_chain_hash for audit/corruption detection
+3. **Observation Replay**: emit_observation in replay flow with deterministic metadata
+
+---
 
 - Default OCR language in `AppState` is currently `ita`.
 - `observation.rs` already defines richer typed observations (`OcrObservation`) for the next persistence phase.
 - JSONL is the current persistence backend.
 - SQLite is planned and can be introduced behind `state_bridge.rs` without changing reducer or orchestration logic.
+- Replay skeleton is implemented in `replay.rs`:
+  - deterministic event ordering (`timestamp`, `id`)
+  - genesis replay (`events` only)
+  - checkpoint + tail replay (`latest snapshot` + `events after cutoff`)
+  - hydration based on canonical rehydration payload stored in snapshot
 
 ---
 

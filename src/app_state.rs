@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
+use crate::profile::IngestionProfile;
+
 #[derive(Debug, Clone)]
 pub struct AppState {
     #[allow(dead_code)]
@@ -10,10 +12,15 @@ pub struct AppState {
     #[allow(dead_code)]
     pub db_path: PathBuf,
     pub ocr_lang: String,
+    /// Active ingestion policy — resolved once at startup, never mutated.
+    pub ingestion_profile: IngestionProfile,
 }
 
 impl AppState {
-    pub async fn new() -> Result<Self> {
+    /// Create AppState from already-resolved values.
+    /// All resolution (CLI/ENV/file/default) happens in `ResolvedConfig::resolve()`
+    /// before this is called.
+    pub async fn new(ingestion_profile: IngestionProfile, ocr_lang: String) -> Result<Self> {
         let root_dir = std::env::current_dir()
             .context("failed to resolve current working directory")?;
 
@@ -29,7 +36,8 @@ impl AppState {
             data_dir,
             ocrys_dir,
             db_path,
-            ocr_lang: "ita".to_string(),
+            ocr_lang,
+            ingestion_profile,
         })
     }
 

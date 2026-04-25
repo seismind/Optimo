@@ -64,14 +64,16 @@ pub struct OcrObservation {
 }
 
 impl OcrObservation {
-    /// Constructor that sets ids and timestamp for you.
+    /// Constructor with runtime-injected metadata.
     pub fn new(
+        id: Uuid,
         document_id: Uuid,
+        created_at: DateTime<Utc>,
         field: impl Into<String>,
         status: ObservationStatus,
     ) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id,
             document_id,
             page: None,
             field: field.into(),
@@ -82,7 +84,7 @@ impl OcrObservation {
             severity: None,
             reason_code: None,
             note: None,
-            created_at: Utc::now(),
+            created_at,
         }
     }
 

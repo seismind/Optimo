@@ -13,9 +13,8 @@ mod persistence;
 mod pipeline;
 mod fold;
 mod fold_properties;
-mod timequake_core;
+mod timequake;
 mod observation;
-mod replay;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -141,8 +140,8 @@ fn run_replay(state: &crate::app_state::AppState, args: &[String]) -> Result<()>
         "genesis"
     };
 
-    let engine = crate::timequake_core::TimequakeCore::new();
-    let output = engine.replay(crate::timequake_core::ReplayInput { checkpoint, events })?;
+    let engine = crate::timequake::TimequakeCore::new();
+    let output = engine.replay(crate::timequake::ReplayInput { checkpoint, events })?;
 
     println!(
         "replay completed: mode={} applied_ocr_events={} skipped_events={} iterations={} confidence={:.4}",

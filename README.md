@@ -289,7 +289,7 @@ Example record:
 ## 🧪 Test Suite
 
 ```
-cargo test replay::tests
+cargo test timequake::tests
 ```
 
 - `final_state_is_identical_genesis_vs_checkpoint_plus_tail`: proves equivalence
@@ -312,7 +312,7 @@ All 5 tests **pass** ✓
 - `observation.rs` already defines richer typed observations (`OcrObservation`) for the next persistence phase.
 - JSONL is the current persistence backend.
 - SQLite is planned and can be introduced behind `state_bridge.rs` without changing reducer or orchestration logic.
-- Replay skeleton is implemented in `replay.rs`:
+- Replay engine is implemented in `timequake.rs`:
   - deterministic event ordering (`timestamp`, `id`)
   - genesis replay (`events` only)
   - checkpoint + tail replay (`latest snapshot` + `events after cutoff`)

@@ -105,7 +105,7 @@ This enables bounded replay cost and deterministic re-evaluation.
 
 ### Current implementation status
 
-`src/replay.rs` provides the initial replay skeleton:
+`src/timequake.rs` provides the replay engine:
 
 - deterministic event ordering (`timestamp`, then `id`)
 - genesis replay from event stream

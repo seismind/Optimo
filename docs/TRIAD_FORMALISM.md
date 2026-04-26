@@ -85,7 +85,7 @@ $$
 B: P \cup O \rightarrow \text{Storage}
 $$
 
-where $B$ is implemented by `state_bridge.rs`.
+where $B$ is implemented by `persistence.rs`.
 
 ### Invariant D — Core/Infrastructure Decoupling
 

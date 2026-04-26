@@ -87,7 +87,7 @@ Persistence belongs to the boundary layer.
 Current boundary:
 
 ```text
-state_bridge.rs
+persistence.rs
 ```
 
 Current storage targets:

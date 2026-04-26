@@ -54,7 +54,7 @@ The system must evolve from JSONL logging to more advanced storage systems (e.g.
 All persistence operations are routed through a dedicated boundary:
 
 ```text
-state_bridge.rs
+persistence.rs
 ```
 
 The reducer and observation layers must remain storage-agnostic.
@@ -272,7 +272,7 @@ and NOT a geometric mean. Those are potential future refinements (see below).
 - `content_hash: Uuid` added: deterministic fingerprint over `(document_id, sorted lines, iterations)`
 - `compute_content_hash` is cardinality-sensitive: duplicate lines are preserved and affect the hash by design
 - SQLite schema introduced: `document_snapshots` + `snapshot_lines` tables
-- `SqliteStore` in `state_bridge.rs` persists both tables on every run alongside JSONL
+- `SqliteStore` in `persistence.rs` persists both tables on every run alongside JSONL
 
 ### Consequences
 

@@ -231,13 +231,13 @@ fixtures/domain/table_invoice_sample/
 
 ## Test Modules
 
-### `src/reducer_algebra.rs`
+### `src/fold_properties.rs`
 - New module dedicated to algebraic properties.
 - Property tests: commutativity, associativity, idempotence (both flavors), monotonicity, boundedness.
 - No domain knowledge; pure reducer properties.
 - Runs on synthetic OCR documents.
 
-### `src/reducer_state.rs::tests`
+### `src/aggregate_state.rs::tests`
 - Mutation tests (ensure metrics update correctly after `update_from_document`).
 - Score calculation verification.
 - Cluster management correctness.
@@ -282,7 +282,7 @@ Once we have solid fixtures and property tests:
 
 ## Implementation Order
 
-1. **Create `src/reducer_algebra.rs`**: Implement property tests (0–4: associativity through boundedness).
+1. **Create `src/fold_properties.rs`**: Implement property tests (0–4: associativity through boundedness).
    - Use synthetic OCR documents (randomized lines, controlled variance).
    - Run permutations, chunks, score bounds checks.
    - Compare results via content_hash + structure equality.

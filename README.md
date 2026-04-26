@@ -13,11 +13,11 @@ flowchart TD
 
 A[main.rs<br>Bootstrap Orchestrator]
 
-A --> B[state.rs<br>Application State]
-A --> C[task.rs<br>Async Orchestration]
-A --> D[reducer.rs<br>Deterministic Reducer]
+A --> B[app_state.rs<br>Application State]
+A --> C[pipeline.rs<br>Async Orchestration]
+A --> D[fold.rs<br>Deterministic Reducer]
 A --> E[observation.rs<br>Observation Model]
-A --> F[state_bridge.rs<br>Persistence Boundary]
+A --> F[persistence.rs<br>Persistence Boundary]
 
 C --> G[OCR Pipeline]
 G --> H[Tokio spawn_blocking + Rayon par_iter]
@@ -68,15 +68,15 @@ src/
 
 main.rs                # Bootstrap and runtime startup
 
-state.rs               # Application state (paths, dirs, OCR language)
+app_state.rs           # Application state (paths, dirs, OCR language)
 
-task.rs                # Async orchestration (Tokio + Rayon boundary)
+pipeline.rs            # Async orchestration (Tokio + Rayon boundary)
 
-reducer.rs             # Deterministic merge/vote logic
+fold.rs                # Deterministic merge/vote logic
 
 observation.rs         # Observation model and validation rules
 
-state_bridge.rs        # Persistence boundary (JSONL today)
+persistence.rs         # Persistence boundary (JSONL + SQLite)
 
 ocrys/
   mod.rs               # OCR facade
@@ -97,7 +97,7 @@ process_all_local.sh   # Run all images locally via cargo
 
 1. `main.rs` loads `AppState` and parses input document paths.
 
-2. `task.rs` schedules one async task per document using `JoinSet`.
+2. `pipeline.rs` schedules one async task per document using `JoinSet`.
 
 3. Each document crosses into CPU workers using `spawn_blocking`.
 
@@ -107,14 +107,14 @@ process_all_local.sh   # Run all images locally via cargo
    - `high_contrast`
    - `rotated`
 
-5. `reducer.rs` merges variant outputs deterministically using fuzzy clustering:
+5. `fold.rs` merges variant outputs deterministically using fuzzy clustering:
 
    - line alignment by position (line index as positional proxy)
    - similarity scoring via `strsim::jaro_winkler`
    - stable winner selection by cluster size
    - deterministic tie-break rules
 
-6. The final observation is appended by `state_bridge.rs` to:
+6. The final observation is appended by `persistence.rs` to:
 
 ```
 data/observations.jsonl
@@ -147,7 +147,7 @@ H --> I[Final Merged OCR Output]
 
 I --> J[Observation Record]
 
-J --> K[State Bridge]
+J --> K[persistence.rs]
 
 K --> L[data/observations.jsonl]
 ```
@@ -311,7 +311,7 @@ All 5 tests **pass** ✓
 - Default OCR language in `AppState` is currently `ita`.
 - `observation.rs` already defines richer typed observations (`OcrObservation`) for the next persistence phase.
 - JSONL is the current persistence backend.
-- SQLite is planned and can be introduced behind `state_bridge.rs` without changing reducer or orchestration logic.
+- SQLite is implemented behind `persistence.rs` without changing reducer or orchestration logic.
 - Replay engine is implemented in `timequake.rs`:
   - deterministic event ordering (`timestamp`, `id`)
   - genesis replay (`events` only)

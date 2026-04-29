@@ -306,6 +306,122 @@ mod tests {
         );
     }
 
+    #[test]
+    fn multi_checkpoint_paths_equal_genesis() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        // Deterministic seed for reproducibility
+        let seed = 0xDEADBEEF_u64;
+        let mut hasher = DefaultHasher::new();
+        seed.hash(&mut hasher);
+        let mut rng_state = hasher.finish();
+
+        // Pseudo-random generator: simple linear congruential
+        let mut next_random = || -> u32 {
+            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (rng_state >> 32) as u32
+        };
+
+        // Generate 1000 deterministic events
+        let mut events = Vec::new();
+        for i in 0..1000 {
+            let page = (next_random() % 5) as usize + 1;
+            let line_index = (next_random() % 20) as usize;
+            let confidence = (next_random() % 100) as f32 / 100.0;
+
+            let text_choices = vec![
+                "INVOICE 2026",
+                "TOTAL 1000",
+                "APPROVED",
+                "PENDING",
+                "AMOUNT DUE",
+                "DATE",
+                "VENDOR",
+                "TERMS",
+            ];
+            let text = text_choices[(next_random() as usize) % text_choices.len()];
+
+            events.push(mk_ocr_event(
+                i as u64,
+                page,
+                line_index,
+                text,
+                confidence,
+            ));
+        }
+
+        let core = TimequakeCore::new();
+
+        // Genesis: full replay from start
+        let genesis = core
+            .replay_genesis(events.clone())
+            .expect("genesis replay should succeed");
+
+        // Checkpoint every 100 events
+        let checkpoint_interval = 100;
+        let num_checkpoints = (events.len() + checkpoint_interval - 1) / checkpoint_interval;
+
+        for checkpoint_idx in 0..num_checkpoints {
+            let cut = (checkpoint_idx + 1) * checkpoint_interval;
+            if cut > events.len() {
+                continue;
+            }
+
+            let head = core
+                .replay_genesis(events[..cut].to_vec())
+                .expect("head replay should succeed");
+
+            let snapshot = head.state.snapshot_with_metadata(SnapshotMetadata {
+                snapshot_id: Uuid::new_v5(
+                    &Uuid::NAMESPACE_OID,
+                    format!("checkpoint-{}", checkpoint_idx).as_bytes(),
+                ),
+                created_at: ts(cut as i64),
+            });
+
+            let from_checkpoint = core
+                .replay_from_checkpoint(snapshot.clone(), events[cut..].to_vec())
+                .expect("checkpoint+tail replay should succeed");
+
+            // Assert all critical fields match genesis
+            assert_eq!(
+                from_checkpoint.state.fields, genesis.state.fields,
+                "checkpoint {} fields must match genesis",
+                checkpoint_idx
+            );
+
+            assert_eq!(
+                from_checkpoint.state.cluster_groups, genesis.state.cluster_groups,
+                "checkpoint {} cluster_groups must match genesis",
+                checkpoint_idx
+            );
+
+            assert_eq!(
+                from_checkpoint.state.convergence_score_bps, genesis.state.convergence_score_bps,
+                "checkpoint {} convergence_score_bps must match genesis",
+                checkpoint_idx
+            );
+
+            assert_eq!(
+                from_checkpoint.state.ambiguity_score_bps, genesis.state.ambiguity_score_bps,
+                "checkpoint {} ambiguity_score_bps must match genesis",
+                checkpoint_idx
+            );
+
+            // Verify by comparing serialized state
+            let genesis_serialized = serde_json::to_string(&genesis.state)
+                .expect("serialize genesis state");
+            let checkpoint_serialized = serde_json::to_string(&from_checkpoint.state)
+                .expect("serialize checkpoint state");
+            assert_eq!(
+                checkpoint_serialized, genesis_serialized,
+                "checkpoint {} state must match genesis when serialized",
+                checkpoint_idx
+            );
+        }
+    }
+
     fn mk_ocr_event(timestamp: u64, page: usize, line_index: usize, text: &str, confidence: f32) -> Event {
         Event::with_metadata(
             Uuid::new_v5(

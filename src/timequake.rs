@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::aggregate_state::ReducerState;
 use crate::event::{Event, EventPayload, EventSource};
-use crate::ocrys::types::{OCRDocument, OCRPage};
+use crate::ocrys::types::{OCRDocument, OCRLine, OCRPage};
 use crate::snapshot::{ReducerSnapshot, SnapshotMetadata};
 
 /// Input for deterministic replay.
@@ -155,7 +155,7 @@ fn event_to_document(event: Event) -> Option<OCRDocument> {
             if line_index > 0 {
                 lines.resize(
                     line_index,
-                    crate::ocrys::types::OCRLine {
+                    OCRLine {
                         text: String::new(),
                         confidence: None,
                     },
@@ -183,7 +183,7 @@ mod tests {
     use crate::event::{Event, EventPayload, EventSource};
     use crate::ocrys::types::OCRLine;
 
-    use super::TimequakeCore;
+    use super::{SnapshotMetadata, TimequakeCore};
 
     #[test]
     fn verifies_equivalence_full_vs_checkpoint_tail() {
@@ -200,7 +200,7 @@ mod tests {
             .verify_equivalence_with_cut(
                 events,
                 3,
-                crate::snapshot::SnapshotMetadata {
+                SnapshotMetadata {
                     snapshot_id: Uuid::new_v5(&Uuid::NAMESPACE_OID, b"checkpoint-3"),
                     created_at: ts(3),
                 },
@@ -221,13 +221,89 @@ mod tests {
         let result = core.verify_equivalence_with_cut(
             vec![mk_ocr_event(1, 1, 0, "only one", 0.99)],
             2,
-            crate::snapshot::SnapshotMetadata {
+            SnapshotMetadata {
                 snapshot_id: Uuid::new_v4(),
                 created_at: ts(1),
             },
         );
 
         assert!(result.is_err(), "invalid cut should fail");
+    }
+
+    #[test]
+    fn replay_preserves_live_metrics() {
+        let events = vec![
+            mk_ocr_event(1, 1, 0, "A", 0.90),
+            mk_ocr_event(2, 1, 0, "A", 0.85),
+            mk_ocr_event(3, 1, 0, "B", 0.80),
+            mk_ocr_event(4, 1, 1, "TOTAL 100", 0.95),
+        ];
+
+        let core = TimequakeCore::new();
+        let replay = core
+            .replay_genesis(events.clone())
+            .expect("genesis replay should succeed");
+
+        let mut runtime_state = crate::aggregate_state::ReducerState::new();
+        for event in events {
+            if let Some(doc) = super::event_to_document(event) {
+                runtime_state.update_from_document(doc);
+            }
+        }
+
+        assert_eq!(
+            replay.state.convergence_score_bps,
+            runtime_state.convergence_score_bps,
+            "replay must preserve convergence metrics"
+        );
+        assert_eq!(
+            replay.state.ambiguity_score_bps,
+            runtime_state.ambiguity_score_bps,
+            "replay must preserve ambiguity metrics"
+        );
+        assert_eq!(
+            replay.state.fields,
+            runtime_state.fields,
+            "replay and runtime should converge to same projection"
+        );
+    }
+
+    #[test]
+    fn snapshot_midstream_then_tail_equals_genesis() {
+        let events = vec![
+            mk_ocr_event(1, 1, 0, "invoice 2026 alpha", 0.93),
+            mk_ocr_event(2, 1, 0, "invoice 2026 alfa", 0.88),
+            mk_ocr_event(3, 1, 1, "total 1000 eur", 0.96),
+            mk_ocr_event(4, 1, 1, "total 1000 euro", 0.92),
+            mk_ocr_event(5, 1, 2, "status approved", 0.97),
+            mk_ocr_event(6, 1, 2, "status approv3d", 0.62),
+        ];
+
+        let core = TimequakeCore::new();
+        let genesis = core
+            .replay_genesis(events.clone())
+            .expect("full replay should succeed");
+
+        let cut = events.len() / 2;
+        let head = core
+            .replay_genesis(events[..cut].to_vec())
+            .expect("head replay should succeed");
+        let snapshot = head.state.snapshot_with_metadata(SnapshotMetadata {
+            snapshot_id: Uuid::new_v5(&Uuid::NAMESPACE_OID, b"midstream-cut"),
+            created_at: ts(cut as i64),
+        });
+
+        let from_checkpoint = core
+            .replay_from_checkpoint(snapshot, events[cut..].to_vec())
+            .expect("checkpoint+tail replay should succeed");
+
+        let left = serde_json::to_string(&genesis.state).expect("serialize genesis state");
+        let right =
+            serde_json::to_string(&from_checkpoint.state).expect("serialize checkpoint state");
+        assert_eq!(
+            left, right,
+            "midstream snapshot + tail must match full replay"
+        );
     }
 
     fn mk_ocr_event(timestamp: u64, page: usize, line_index: usize, text: &str, confidence: f32) -> Event {

@@ -14,16 +14,17 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use rayon::prelude::*;
 use std::path::PathBuf;
-use tokio::task::JoinSet;
+use tokio::task::{spawn_blocking, JoinSet};
 use uuid::Uuid;
 
+use crate::aggregate_state::ReducerState;
+use crate::app_state::AppState;
+use crate::fold;
 use crate::ocrys;
 use crate::ocrys::normalize;
-use crate::profile::IngestionProfile;
-use crate::app_state::AppState;
+use crate::ocrys::types::OCRDocument;
 use crate::persistence::{StateBridge, SqliteStore};
-use crate::fold;
-use crate::aggregate_state::ReducerState;
+use crate::profile::IngestionProfile;
 use crate::snapshot::{RawObservation, SnapshotMetadata};
 
 /// Entry point from main.rs
@@ -70,7 +71,7 @@ async fn process_one_document(state: &AppState, doc: PathBuf) -> Result<(Reducer
     tokio::fs::create_dir_all(&run_dir).await?;
 
     // CPU-bound section (Tokio → Rayon boundary)
-    let result = tokio::task::spawn_blocking(move || {
+    let result = spawn_blocking(move || {
         cpu_map_reduce_ocr(&doc, &run_dir, &lang, &profile)
     })
     .await??;
@@ -98,7 +99,7 @@ fn cpu_map_reduce_ocr(
 
     // ---- MAP ----
     // Produce (raw_doc, normalized_doc) in parallel per variant.
-    let pairs: Vec<(crate::ocrys::types::OCRDocument, crate::ocrys::types::OCRDocument, String)> =
+    let pairs: Vec<(OCRDocument, OCRDocument, String)> =
         variants
             .par_iter()
             .map(|variant| {

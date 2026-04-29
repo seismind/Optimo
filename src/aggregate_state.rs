@@ -28,6 +28,12 @@ pub struct ReducerState {
     pub cluster_groups: BTreeMap<usize, BTreeMap<usize, Vec<Vec<String>>>>,
 }
 
+/// Canonical aggregate output of the algebraic fold.
+///
+/// Kept as a type alias to preserve backwards compatibility with existing
+/// `ReducerState` call sites while exposing domain-first naming.
+pub type AggregateState = ReducerState;
+
 impl ReducerState {
     pub fn new() -> Self {
         Self {

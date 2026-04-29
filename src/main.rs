@@ -2,6 +2,11 @@ use anyhow::Result;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+use crate::app_state::AppState;
+use crate::config::ResolvedConfig;
+use crate::persistence::StateBridge;
+use crate::timequake::{ReplayInput, TimequakeCore};
+
 mod config;
 mod ocrys;
 mod event;
@@ -15,6 +20,7 @@ mod fold;
 mod fold_properties;
 mod timequake;
 mod observation;
+mod operational_policy;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -26,7 +32,7 @@ async fn main() -> Result<()> {
     // `show-config` runs before AppState — it only needs ResolvedConfig.
     if flags.command.as_deref() == Some("show-config") {
         let cwd = std::env::current_dir()?;
-        let cfg = crate::config::ResolvedConfig::resolve(
+        let cfg = ResolvedConfig::resolve(
             flags.profile.as_deref(),
             flags.lang.as_deref(),
             flags.config_file.as_deref(),
@@ -38,7 +44,7 @@ async fn main() -> Result<()> {
 
     // Resolve config (CLI > ENV > FILE > DEFAULT).
     let cwd = std::env::current_dir()?;
-    let cfg = crate::config::ResolvedConfig::resolve(
+    let cfg = ResolvedConfig::resolve(
         flags.profile.as_deref(),
         flags.lang.as_deref(),
         flags.config_file.as_deref(),
@@ -52,7 +58,7 @@ async fn main() -> Result<()> {
     );
 
     // Bootstrap application state.
-    let state = crate::app_state::AppState::new(
+    let state = AppState::new(
         cfg.profile.value,
         cfg.ocr_lang.value,
     ).await?;
@@ -122,8 +128,8 @@ impl Flags {
     }
 }
 
-fn run_replay(state: &crate::app_state::AppState, args: &[String]) -> Result<()> {
-    let bridge = crate::persistence::StateBridge::new(state);
+fn run_replay(state: &AppState, args: &[String]) -> Result<()> {
+    let bridge = StateBridge::new(state);
     let document_id = args
         .first()
         .map(|raw| Uuid::parse_str(raw))
@@ -140,8 +146,8 @@ fn run_replay(state: &crate::app_state::AppState, args: &[String]) -> Result<()>
         "genesis"
     };
 
-    let engine = crate::timequake::TimequakeCore::new();
-    let output = engine.replay(crate::timequake::ReplayInput { checkpoint, events })?;
+    let engine = TimequakeCore::new();
+    let output = engine.replay(ReplayInput { checkpoint, events })?;
 
     println!(
         "replay completed: mode={} applied_ocr_events={} skipped_events={} iterations={} confidence={:.4}",
@@ -158,6 +164,8 @@ fn run_replay(state: &crate::app_state::AppState, args: &[String]) -> Result<()>
 #[cfg(test)]
 mod tests {
     use anyhow::{Context, Result};
+    use crate::fold::reduce_documents;
+    use crate::ocrys::run_ocr;
     use std::fs;
     use std::process::Command;
 
@@ -184,7 +192,7 @@ mod tests {
         let lang = "ita";
         let variant = "pipeline_e2e";
 
-        let artifact = crate::ocrys::run_ocr(&fixture, run_dir, lang, variant)
+        let artifact = run_ocr(&fixture, run_dir, lang, variant)
             .context("ocr step failed")?;
 
         let txt_path = run_dir.join("ocr_pipeline_e2e.txt");
@@ -199,7 +207,7 @@ mod tests {
             anyhow::bail!("OCR produced empty text artifact at {:?}", txt_path);
         }
 
-        let reduced = crate::fold::reduce_documents(vec![artifact])
+        let reduced = reduce_documents(vec![artifact])
             .context("reducer step failed")?;
 
         if reduced.source != fixture.to_string_lossy() {

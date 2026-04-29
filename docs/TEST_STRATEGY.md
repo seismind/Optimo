@@ -165,6 +165,44 @@ input_lines ⊆ (output.pages.lines ∪ output.alternatives)
 
 ---
 
+## Replay and Checkpoint Equivalence
+
+### Multi-Checkpoint Path Equivalence (Stress Test)
+
+**Test**: `multi_checkpoint_paths_equal_genesis` (src/timequake.rs)
+
+**Property**: Snapshots + tail replay must converge to identical final state as full genesis replay.
+
+```
+∀ checkpoint_cut ∈ {100, 200, ..., 1000}:
+  replay_from_checkpoint(snapshot_at_cut, events[cut..])
+  ≡ replay_genesis(events[0..])
+```
+
+**Why it matters**:
+- Proves that snapshots preserve sufficient state for deterministic replay.
+- Validates that checkpoint strategy is sound: you can safely discard events before a checkpoint.
+- Tests across many paths (1000 seeded events, 10 checkpoints at intervals of 100).
+
+**Scenario**:
+- Generate **1000 deterministic OCR events** using seeded pseudo-RNG (reproducible).
+- Events vary: page (1–5), line_index (0–19), text (8 invoice-domain choices), confidence (0.0–1.0).
+- Process full stream from genesis → record final state.
+- For each checkpoint at multiples of 100:
+  - Replay events[0..cut] to create snapshot.
+  - Replay from snapshot + events[cut..].
+  - Compare final state against genesis.
+- Assert equality on:
+  - `fields` (all page/line entries)
+  - `cluster_groups` (all line alternatives and their counts)
+  - `convergence_score_bps` (final convergence metric)
+  - `ambiguity_score_bps` (final ambiguity metric)
+  - Full serialized state (via JSON comparison for rigorous validation)
+
+**Result**: ✓ PASS across all 10 checkpoint paths (2+ second runtime, no flakes observed).
+
+---
+
 ## Comparison Method: Typed Equality, Not String Comparison
 
 **Key principle**: Compare `ReducerSnapshot` structures via **content_hash** and structured field equality, not raw JSON strings.

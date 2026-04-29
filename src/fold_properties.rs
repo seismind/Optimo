@@ -206,4 +206,56 @@ mod tests {
                 "expected line {:?} not found in reducer output", expected_line);
         }
     }
+
+    // -------- Property 6: Associativity (Batch vs Incremental) --------
+
+    #[test]
+    fn test_chunking_invariance() {
+        // Stream vs Batch equivalence: reducing all docs at once produces the same result
+        // as incrementally applying them one by one via `update_from_document`.
+        //
+        // reduce_documents([A, B, C]) ≡ empty.update(A).update(B).update(C)
+        let source = "file://test.png";
+        let doc_a = make_doc(source, vec!["invoice", "2026"]);
+        let doc_b = make_doc(source, vec!["invoice", "2026"]);
+        let doc_c = make_doc(source, vec!["total", "1000"]);
+
+        // Batch path: reduce all at once
+        let all = fold::reduce_documents(vec![
+            doc_a.clone(),
+            doc_b.clone(),
+            doc_c.clone(),
+        ])
+        .expect("batch reduce");
+
+        // Incremental path: apply each document one by one
+        let mut incremental = crate::aggregate_state::ReducerState::new();
+        incremental.update_from_document(doc_a);
+        incremental.update_from_document(doc_b);
+        incremental.update_from_document(doc_c);
+
+        // Assert: batch and incremental paths produce identical results.
+        // Allow ±1 bps tolerance for convergence/ambiguity due to integer rounding
+        // in different processing orders.
+        let convergence_delta = (all.convergence_score_bps as i32 - incremental.convergence_score_bps as i32).abs();
+        assert!(convergence_delta <= 1,
+            "convergence_score_bps must match within 1 bps: batch={}, incremental={}, delta={}",
+            all.convergence_score_bps, incremental.convergence_score_bps, convergence_delta);
+
+        let ambiguity_delta = (all.ambiguity_score_bps as i32 - incremental.ambiguity_score_bps as i32).abs();
+        assert!(ambiguity_delta <= 1,
+            "ambiguity_score_bps must match within 1 bps: batch={}, incremental={}, delta={}",
+            all.ambiguity_score_bps, incremental.ambiguity_score_bps, ambiguity_delta);
+
+        assert_eq!(
+            all.cluster_groups,
+            incremental.cluster_groups,
+            "cluster_groups must match between batch and incremental"
+        );
+        assert_eq!(
+            all.fields,
+            incremental.fields,
+            "fields must match between batch and incremental"
+        );
+    }
 }

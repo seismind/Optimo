@@ -247,8 +247,8 @@ impl ReducerState {
     }
 
     fn recompute_metrics(&mut self) {
-        let mut total_positions = 0_u32;
-        let mut convergence_sum = 0_u32;
+        let mut total_positions = 0_u64;
+        let mut convergence_sum = 0_u64;
 
         for line_map in self.cluster_groups.values() {
             for clusters in line_map.values() {
@@ -262,7 +262,7 @@ impl ReducerState {
                 let winner_size = clusters.iter().map(|c| c.len()).max().unwrap_or(0) as u32;
                 let total_candidates = total_candidates as u32;
                 let line_convergence = (winner_size * SCORE_SCALE) / total_candidates.max(1);
-                convergence_sum = convergence_sum.saturating_add(line_convergence);
+                convergence_sum = convergence_sum.saturating_add(line_convergence as u64);
             }
         }
 
@@ -272,7 +272,7 @@ impl ReducerState {
             return;
         }
 
-        self.convergence_score_bps = convergence_sum / total_positions;
+        self.convergence_score_bps = (convergence_sum / total_positions) as u32;
         self.ambiguity_score_bps = SCORE_SCALE.saturating_sub(self.convergence_score_bps);
     }
 }

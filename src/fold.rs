@@ -78,6 +78,11 @@ impl PositionAccumulator {
             if sim < SIM_THRESHOLD {
                 continue;
             }
+            // Reject cross-script matches: Cyrillic homoglyphs must not silently
+            // merge with Latin lookalikes even when jaro_winkler exceeds threshold.
+            if !same_script_family(&cluster.text, text) {
+                continue;
+            }
 
             if sim > best_sim {
                 best_sim = sim;
@@ -341,7 +346,8 @@ fn to_bps(part: f32, total: f32) -> u32 {
 }
 
 fn normalize_for_vote(raw: &str) -> String {
-    let nfc: String = raw.nfc().collect();
+    // NFC normalization, then strip invisible control characters before clustering.
+    let nfc: String = raw.nfc().filter(|&c| !is_invisible(c)).collect();
     let trimmed = nfc.trim();
     if trimmed.is_empty() {
         return String::new();
@@ -349,6 +355,32 @@ fn normalize_for_vote(raw: &str) -> String {
 
     let collapsed = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
     harmonize_decimal_comma(&collapsed)
+}
+
+/// Returns `true` if `c` is an invisible character that must be stripped before
+/// clustering: zero-width space, joiners, BOM, soft hyphen, etc.
+fn is_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}' // SOFT HYPHEN
+        | '\u{200B}' // ZERO WIDTH SPACE
+        | '\u{200C}' // ZERO WIDTH NON-JOINER
+        | '\u{200D}' // ZERO WIDTH JOINER
+        | '\u{2060}' // WORD JOINER
+        | '\u{FEFF}'  // BOM / ZERO WIDTH NO-BREAK SPACE
+    )
+}
+
+/// Returns `true` when two strings belong to the same Unicode script family.
+///
+/// Rejects cluster matches where one string is purely Latin and the other
+/// contains Cyrillic, blocking homoglyph injection attacks
+/// (e.g. Cyrillic 'і' U+0456 silently merging with Latin 'i').
+fn same_script_family(a: &str, b: &str) -> bool {
+    fn has_cyrillic(s: &str) -> bool {
+        s.chars().any(|c| ('\u{0400}'..='\u{04FF}').contains(&c))
+    }
+    has_cyrillic(a) == has_cyrillic(b)
 }
 
 fn harmonize_decimal_comma(s: &str) -> String {

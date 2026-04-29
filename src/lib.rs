@@ -19,4 +19,5 @@ pub mod app_state;
 pub mod persistence;
 pub mod pipeline;
 pub mod fold_properties;
+pub mod fold_adversarial;
 pub mod operational_policy;

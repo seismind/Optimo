@@ -18,6 +18,7 @@ mod persistence;
 mod pipeline;
 mod fold;
 mod fold_properties;
+mod fold_adversarial;
 mod timequake;
 mod observation;
 mod operational_policy;

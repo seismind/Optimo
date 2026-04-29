@@ -4,6 +4,7 @@ use anyhow::Result;
 pub mod tesseract;
 pub mod normalize;
 pub mod types;
+pub mod preprocess;
 
 pub use types::*;
 

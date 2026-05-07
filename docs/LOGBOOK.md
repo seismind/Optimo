@@ -205,3 +205,62 @@ data/ocrys/latest/          # OCR artifacts per run
 OCR is currently used only as a pipeline stress-test and input generator.
 
 Long-term objective: a deterministic document analysis engine where parsing, validation, rule evaluation, and structural checks run through the same reducer/observation pipeline — without modifying the deterministic core.
+
+---
+
+## Reducer Hardening (May 2026)
+
+### What changed
+
+The fold engine matured from a weighted voting prototype into a semantically strict evidence reducer. Seven distinct properties were strengthened:
+
+**Algebraic properties — formally tested**
+- Commutativity: reducing `[A, B, C]` in any permutation produces identical output
+- Idempotence: duplicate documents do not create phantom clusters or inflate scores
+- Monotonicity: additional confirming evidence never decreases the convergence score
+- Batch/incremental equivalence: `reduce([A,B,C])` ≡ `empty.update(A).update(B).update(C)` within ±1 bps
+
+**Fuzzy clustering with anti-homoglyph guardrails**
+- Jaro-Winkler clustering on NFC-normalized, case-folded cluster keys
+- `same_script_family()` guard blocks Cyrillic–Latin homoglyph injection (e.g. `і` U+0456 silently merging with `i`)
+- Case-insensitive matching with original-variant preservation in the winner display
+- `sanitize_variant_display()` strips control characters and zero-width codepoints before BTreeMap storage
+
+**Hard idempotency via source fingerprint**
+- Items are deduplicated by `(position, cluster_key, source)` before entering the fold
+- The same OCR source cannot vote twice for the same cluster at the same position
+- Deduplication is order-independent (applied after the deterministic sort)
+
+**`collision_rate_bps` — runtime convergence metric**
+- `InlineFoldState` tracks `total_votes` and `collisions` (votes that merged into an existing cluster)
+- Exposed as `AggregateState.collision_rate_bps` (serializable; `serde(default = 0)` for backward-compatible snapshots)
+- High collision rate indicates dense, well-converging inputs
+
+**Configurable `similarity_threshold` per document type**
+- `IngestionProfile` gains a `similarity_threshold: f64` field
+- `tesseract` / `legacy_import`: 0.90 — tolerant of OCR noise
+- `carbo` / `strict`: 0.95 — tighter; `"Rck30"` ≠ `"Rck 30"`
+- New public API: `reduce_documents_with_profile(docs, profile)`
+
+**Image preprocessing pipeline**
+- `src/ocrys/preprocess.rs`: ROI extraction → grayscale → Otsu thresholding → optional resize → PNG
+- `Roi { x, y, width, height, kind: RegionKind, resize: Option<(u32, u32)> }`
+- `RegionKind`: `TitleBlock`, `InvoiceTotals`, `StructuralTable`, `Signature`
+- Otsu implementation with explicit fallback to 128 for empty/flat histograms (no division-by-zero)
+
+### Test suite
+
+```text
+83 tests — all passing
+  fold::tests              9   core reducer invariants
+  fold_adversarial::tests  17  arithmetic safety, degenerate inputs, normalization, clustering, security
+  fold_properties::tests   7   algebraic property proofs
+  ocrys::preprocess::tests 8   ROI pipeline and Otsu thresholding
+  aggregate_state::tests   6   snapshot hydration and profile enforcement
+  timequake::tests         5   replay engine equivalence
+  + config, profile, snapshot, observation, normalize
+```
+
+```bash
+cargo test
+```

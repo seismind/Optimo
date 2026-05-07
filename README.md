@@ -11,6 +11,16 @@ Built to explore repeatable workflows where noisy inputs (OCR today, structured 
 - pipeline stability
 - adversarial tests
 
+## What's inside
+
+- Algebraic fold with proven properties (commutativity, idempotence, monotonicity)
+- Fuzzy clustering with Cyrillic homoglyph guardrail
+- Hard idempotency via source fingerprint deduplication
+- `collision_rate_bps` as a runtime convergence metric
+- Configurable similarity threshold per ingestion profile
+- Image preprocessing pipeline with Otsu thresholding
+- 83 tests across unit, property, and adversarial suites
+
 ## Stack
 
 Rust • Tokio • Rayon • Tesseract • JSONL

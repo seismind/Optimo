@@ -26,6 +26,10 @@ pub struct ReducerState {
     pub iterations: u32,
     pub ambiguity_score_bps: u32,
     pub cluster_groups: BTreeMap<usize, BTreeMap<usize, Vec<Vec<String>>>>,
+    /// Fraction of votes that merged into an existing cluster (basis points).
+    /// Populated by `fold::reduce_documents`; 0 when rehydrated from a snapshot.
+    #[serde(default)]
+    pub collision_rate_bps: u32,
 }
 
 /// Canonical aggregate output of the algebraic fold.
@@ -45,6 +49,7 @@ impl ReducerState {
             iterations: 0,
             ambiguity_score_bps: 0,
             cluster_groups: BTreeMap::new(),
+            collision_rate_bps: 0,
         }
     }
 
@@ -184,6 +189,7 @@ impl ReducerState {
             iterations: snapshot.iterations,
             ambiguity_score_bps: SCORE_SCALE,
             cluster_groups,
+            collision_rate_bps: 0,
         };
 
         state.rebuild_pages();

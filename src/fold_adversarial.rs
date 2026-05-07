@@ -191,6 +191,28 @@ mod tests {
             "winner must not contain zero-width space, got: {:?}", winner);
     }
 
+    /// Hidden control chars must be sanitized before variant storage, so they
+    /// cannot affect deterministic lexicographic tie-breaks.
+    #[test]
+    fn normalize_control_chars_stripped_from_variant_display() {
+        let clean = "Pilastro";
+        let polluted = "Pi\u{0007}lastro\u{0000}"; // BEL + NUL
+
+        let docs = vec![
+            uniform("file://a.png", vec![clean]),
+            uniform("file://a.png", vec![polluted]),
+            uniform("file://a.png", vec![clean]),
+        ];
+
+        let state = fold::reduce_documents(docs).expect("reduce");
+        let pos = state.cluster_groups.get(&1).expect("page 1").get(&0).expect("pos 0");
+        assert_eq!(pos.len(), 1, "control-char variants must collapse into one cluster: {:?}", pos);
+
+        let winner = &state.pages[0].lines[0].text;
+        assert!(winner.chars().all(|c| !c.is_control()),
+            "winner must not contain control chars: {:?}", winner);
+    }
+
     /// "45,20" (decimal comma) and "45.20" (decimal point) must be the same token
     /// after harmonization and must land in a single cluster.
     #[test]
@@ -273,5 +295,123 @@ mod tests {
         let pos = state.cluster_groups.get(&1).expect("page 1").get(&0).expect("pos 0");
         assert!(pos.len() >= 2,
             "Cyrillic homoglyph must NOT merge with Latin lookalike: {:?}", pos);
+    }
+
+    /// Case variants must map to the same cluster while preserving original winner text.
+    #[test]
+    fn case_insensitive_variants_single_cluster() {
+        let docs = vec![
+            uniform("file://a.png", vec!["Pilastro"]),
+            uniform("file://a.png", vec!["PILASTRO"]),
+            uniform("file://a.png", vec!["pilastro"]),
+        ];
+
+        let state = fold::reduce_documents(docs).expect("reduce");
+        let pos = state.cluster_groups.get(&1).expect("page 1").get(&0).expect("pos 0");
+        assert_eq!(pos.len(), 1, "case variants must collapse into one cluster: {:?}", pos);
+    }
+
+    /// Whitespace-only perturbations must map to the same cluster.
+    #[test]
+    fn whitespace_variants_single_cluster() {
+        let docs = vec![
+            uniform("file://a.png", vec!["Pilastro Armato"]),
+            uniform("file://a.png", vec!["  Pilastro    Armato  "]),
+            uniform("file://a.png", vec!["Pilastro\tArmato"]),
+        ];
+
+        let state = fold::reduce_documents(docs).expect("reduce");
+        let pos = state.cluster_groups.get(&1).expect("page 1").get(&0).expect("pos 0");
+        assert_eq!(pos.len(), 1, "whitespace variants must collapse into one cluster: {:?}", pos);
+    }
+
+    /// Winner selection must be deterministic across input permutations.
+    #[test]
+    fn winner_stable_across_permutations() {
+        let a = uniform("file://a.png", vec!["Pilastro"]);
+        let b = uniform("file://a.png", vec!["PILASTRO"]);
+        let c = uniform("file://a.png", vec!["pilastro"]);
+
+        let left = fold::reduce_documents(vec![a.clone(), b.clone(), c.clone()]).expect("reduce left");
+        let right = fold::reduce_documents(vec![c, a, b]).expect("reduce right");
+
+        assert_eq!(left.pages[0].lines[0].text, right.pages[0].lines[0].text,
+            "winner text must be stable across permutations");
+        assert_eq!(left.cluster_groups, right.cluster_groups,
+            "cluster assignment must be stable across permutations");
+    }
+
+    // ======================================================================
+    // 13  Collision-rate stress
+    // ======================================================================
+
+    /// 1000 near-identical variants of the same concept must collapse to one cluster.
+    ///
+    /// This test simulates structured-table quantities arriving at different times
+    /// with tiny textual perturbations. The reducer must avoid cluster explosion.
+    #[test]
+    fn collision_rate_thousand_near_identical_variants_single_cluster() {
+        fn variant(i: usize) -> String {
+            match i % 8 {
+                0 => "Calcestruzzo Rck 30".to_string(),
+                1 => "Calcestruzzo Rck30".to_string(),
+                2 => "Calcestruzzo_Rck_30".to_string(),
+                3 => "Calcestruzzo rck 30".to_string(),
+                4 => " Calcestruzzo   Rck   30 ".to_string(),
+                5 => "Calcestruzzo-Rck-30".to_string(),
+                6 => "Calcestruzzo Rck,30".to_string(),
+                _ => "Calcestruzzo  Rck  30".to_string(),
+            }
+        }
+
+        let variants: Vec<String> = (0..1000).map(variant).collect();
+        // Each doc has a unique source so the hard-idempotency dedup
+        // (position, cluster_key, source) does not collapse different documents.
+        let docs: Vec<OCRDocument> = variants
+            .iter()
+            .enumerate()
+            .map(|(i, v)| uniform(&format!("file://collision_{i}.png"), vec![v.as_str()]))
+            .collect();
+
+        let state = fold::reduce_documents(docs).expect("reduce");
+
+        let position = state
+            .cluster_groups
+            .get(&1)
+            .expect("page 1")
+            .get(&0)
+            .expect("line 0");
+
+        assert_eq!(
+            position.len(),
+            1,
+            "all near-identical variants must collapse to a single cluster: {:?}",
+            position
+        );
+
+        let total_votes_in_cluster = position[0].len();
+        assert_eq!(
+            total_votes_in_cluster,
+            1000,
+            "single cluster must preserve all votes without losses"
+        );
+
+        let winner = &state
+            .pages
+            .iter()
+            .find(|p| p.page_number == 1)
+            .expect("page 1")
+            .lines[0]
+            .text;
+
+        let compact = winner
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>()
+            .to_lowercase();
+
+        assert!(compact.contains("calcestruzzo"), "winner lost token 'Calcestruzzo': {winner}");
+        assert!(compact.contains("rck"), "winner lost token 'Rck': {winner}");
+        assert!(compact.contains("30"), "winner lost token '30': {winner}");
     }
 }

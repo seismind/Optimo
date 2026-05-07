@@ -5,7 +5,7 @@ use crate::profile::IngestionProfile;
 use crate::snapshot::{ReducerSnapshot, SnapshotMetadata};
 use crate::observation::{OcrObservation, ObservationStatus};
 use chrono::{DateTime, Utc};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
@@ -22,7 +22,8 @@ type Position = (u32, u32);
 #[derive(Debug, Clone)]
 struct FoldItem {
     position: Position,
-    text: String,
+    cluster_key: String,
+    raw_variant: String,
     weight: f32,
     source: String,
 }
@@ -36,7 +37,17 @@ struct CandidateVote {
 
 #[derive(Debug, Clone)]
 struct VoteCluster {
-    text: String,
+    key: String,
+    variants: BTreeMap<String, VariantStats>,
+    winner_text: String,
+    winner_weight: f32,
+    winner_count: u32,
+    total_weight: f32,
+    count: u32,
+}
+
+#[derive(Debug, Clone, Default)]
+struct VariantStats {
     total_weight: f32,
     count: u32,
 }
@@ -50,37 +61,58 @@ struct PositionAccumulator {
 }
 
 impl PositionAccumulator {
-    fn add_vote(&mut self, text: String, weight: f32) {
-        let cluster_idx = self.find_cluster_index(&text);
+    /// Adds a vote to the accumulator. Returns `true` if the vote merged into
+    /// an existing cluster (collision), or `false` if a new cluster was created.
+    fn add_vote(&mut self, cluster_key: String, raw_variant: String, weight: f32, sim_threshold: f64) -> bool {
+        let cluster_idx = self.find_cluster_index(&cluster_key, sim_threshold);
+        let is_collision = cluster_idx.is_some();
         match cluster_idx {
             Some(idx) => {
                 let cluster = &mut self.clusters[idx];
                 cluster.total_weight += weight;
                 cluster.count = cluster.count.saturating_add(1);
-                cluster.text = prefer_text(&cluster.text, &text).to_string();
+                let variant = cluster.variants.entry(raw_variant).or_default();
+                variant.total_weight += weight;
+                variant.count = variant.count.saturating_add(1);
+                cluster.recompute_variant_winner();
             }
             None => self.clusters.push(VoteCluster {
-                text,
+                key: cluster_key,
+                variants: {
+                    let mut variants = BTreeMap::new();
+                    variants.insert(
+                        raw_variant.clone(),
+                        VariantStats {
+                            total_weight: weight,
+                            count: 1,
+                        },
+                    );
+                    variants
+                },
+                winner_text: raw_variant,
+                winner_weight: weight,
+                winner_count: 1,
                 total_weight: weight,
                 count: 1,
             }),
         }
 
         self.recompute_winner();
+        is_collision
     }
 
-    fn find_cluster_index(&self, text: &str) -> Option<usize> {
+    fn find_cluster_index(&self, cluster_key: &str, sim_threshold: f64) -> Option<usize> {
         let mut best_idx: Option<usize> = None;
         let mut best_sim = f64::MIN;
 
         for (idx, cluster) in self.clusters.iter().enumerate() {
-            let sim = strsim::jaro_winkler(&cluster.text, text);
-            if sim < SIM_THRESHOLD {
+            let sim = strsim::jaro_winkler(&cluster.key, cluster_key);
+            if sim < sim_threshold {
                 continue;
             }
             // Reject cross-script matches: Cyrillic homoglyphs must not silently
             // merge with Latin lookalikes even when jaro_winkler exceeds threshold.
-            if !same_script_family(&cluster.text, text) {
+            if !same_script_family(&cluster.key, cluster_key) {
                 continue;
             }
 
@@ -97,7 +129,7 @@ impl PositionAccumulator {
         self.clusters
             .iter()
             .map(|c| CandidateVote {
-                text: c.text.clone(),
+                text: c.winner_text.clone(),
                 total_weight: c.total_weight,
                 count: c.count,
             })
@@ -109,7 +141,7 @@ impl PositionAccumulator {
             b.total_weight
                 .total_cmp(&a.total_weight)
                 .then_with(|| b.count.cmp(&a.count))
-                .then_with(|| a.text.cmp(&b.text))
+                .then_with(|| a.winner_text.cmp(&b.winner_text))
         });
 
         let alternatives = self.alternatives();
@@ -141,15 +173,66 @@ impl PositionAccumulator {
     }
 }
 
-#[derive(Debug, Default)]
+impl VoteCluster {
+    fn recompute_variant_winner(&mut self) {
+        let mut best_text = String::new();
+        let mut best_weight = f32::MIN;
+        let mut best_count = 0_u32;
+
+        for (text, stats) in &self.variants {
+            let better = stats.total_weight > best_weight
+                || (stats.total_weight == best_weight && stats.count > best_count)
+                || (stats.total_weight == best_weight
+                    && stats.count == best_count
+                    && (best_text.is_empty() || text < &best_text));
+
+            if better {
+                best_text = text.clone();
+                best_weight = stats.total_weight;
+                best_count = stats.count;
+            }
+        }
+
+        self.winner_text = best_text;
+        self.winner_weight = if best_weight == f32::MIN { 0.0 } else { best_weight };
+        self.winner_count = best_count;
+    }
+}
+
+#[derive(Debug)]
 struct InlineFoldState {
     positions: BTreeMap<Position, PositionAccumulator>,
     convergence_sum_bps: u64,
     ambiguity_sum_bps: u64,
+    /// Step 2: total votes ingested (after Step 1 dedup).
+    total_votes: u64,
+    /// Step 2: votes that merged into an existing cluster.
+    collisions: u64,
+    /// Step 3: fuzzy similarity threshold forwarded to PositionAccumulator.
+    sim_threshold: f64,
+}
+
+impl Default for InlineFoldState {
+    fn default() -> Self {
+        Self::new(SIM_THRESHOLD)
+    }
 }
 
 impl InlineFoldState {
+    fn new(sim_threshold: f64) -> Self {
+        Self {
+            positions: BTreeMap::new(),
+            convergence_sum_bps: 0,
+            ambiguity_sum_bps: 0,
+            total_votes: 0,
+            collisions: 0,
+            sim_threshold,
+        }
+    }
+
     fn ingest(&mut self, item: FoldItem) {
+        self.total_votes += 1;
+
         let entry = self.positions.entry(item.position).or_default();
         self.convergence_sum_bps = self
             .convergence_sum_bps
@@ -158,7 +241,10 @@ impl InlineFoldState {
             .ambiguity_sum_bps
             .saturating_sub(entry.ambiguity_score_bps as u64);
 
-        entry.add_vote(item.text, item.weight);
+        let is_collision = entry.add_vote(item.cluster_key, item.raw_variant, item.weight, self.sim_threshold);
+        if is_collision {
+            self.collisions += 1;
+        }
 
         self.convergence_sum_bps = self
             .convergence_sum_bps
@@ -179,6 +265,15 @@ impl InlineFoldState {
             (self.ambiguity_sum_bps / positions) as u32,
         )
     }
+
+    /// Fraction of votes that merged into an existing cluster, in basis points.
+    /// High values indicate dense, well-converging inputs.
+    fn collision_rate_bps(&self) -> u32 {
+        if self.total_votes == 0 {
+            return 0;
+        }
+        ((self.collisions * 10_000) / self.total_votes) as u32
+    }
 }
 
 /// Deterministic reducer.
@@ -186,6 +281,17 @@ impl InlineFoldState {
 /// Contract:
 ///   Reducer: Vec<OCRDocument> -> AggregateState
 pub fn reduce_documents(docs: Vec<OCRDocument>) -> anyhow::Result<AggregateState> {
+    reduce_documents_with_profile(docs, &IngestionProfile::default())
+}
+
+/// Deterministic reducer with an explicit ingestion profile.
+///
+/// The profile controls the fuzzy-similarity threshold used for cluster
+/// matching and any other per-document-type reduction policy.
+pub fn reduce_documents_with_profile(
+    docs: Vec<OCRDocument>,
+    profile: &IngestionProfile,
+) -> anyhow::Result<AggregateState> {
     if docs.is_empty() {
         return Err(anyhow::anyhow!("no OCR documents to reduce"));
     }
@@ -208,14 +314,16 @@ pub fn reduce_documents(docs: Vec<OCRDocument>) -> anyhow::Result<AggregateState
     for doc in &docs {
         for page in &doc.pages {
             for (line_idx, line) in page.lines.iter().enumerate() {
-                let text = normalize_for_vote(&line.text);
-                if text.is_empty() {
+                let raw_variant = normalize_for_variant(&line.text);
+                if raw_variant.is_empty() {
                     continue;
                 }
+                let cluster_key = normalize_for_vote(&line.text);
 
                 items.push(FoldItem {
                     position: (page.page_number as u32, (line_idx + 1) as u32),
-                    text,
+                    cluster_key,
+                    raw_variant,
                     weight: sanitize_confidence(line.confidence),
                     source: doc.source.clone(),
                 });
@@ -230,12 +338,24 @@ pub fn reduce_documents(docs: Vec<OCRDocument>) -> anyhow::Result<AggregateState
     items.sort_by(|a, b| {
         a.position
             .cmp(&b.position)
-            .then_with(|| a.text.cmp(&b.text))
+            .then_with(|| a.cluster_key.cmp(&b.cluster_key))
+            .then_with(|| a.raw_variant.cmp(&b.raw_variant))
             .then_with(|| b.weight.total_cmp(&a.weight))
             .then_with(|| a.source.cmp(&b.source))
     });
 
-    let mut fold_state = InlineFoldState::default();
+    // Step 1: Hard idempotency — deduplicate identical votes from the same
+    // document source at the same position. After the deterministic sort above,
+    // the first occurrence of each (position, cluster_key, source) triple is
+    // always the canonical one, so deduplication is order-independent.
+    {
+        let mut seen: HashSet<(Position, String, String)> = HashSet::new();
+        items.retain(|item| {
+            seen.insert((item.position, item.cluster_key.clone(), item.source.clone()))
+        });
+    }
+
+    let mut fold_state = InlineFoldState::new(profile.similarity_threshold);
     for item in items {
         fold_state.ingest(item);
     }
@@ -255,22 +375,9 @@ pub fn reduce_documents(docs: Vec<OCRDocument>) -> anyhow::Result<AggregateState
         iterations,
         ambiguity_score_bps,
         cluster_groups,
+        collision_rate_bps: fold_state.collision_rate_bps(),
     })
 }
-fn prefer_text<'a>(left: &'a str, right: &'a str) -> &'a str {
-    if right.len() > left.len() {
-        return right;
-    }
-    if left.len() > right.len() {
-        return left;
-    }
-    if right < left {
-        right
-    } else {
-        left
-    }
-}
-
 fn build_pages(results: &BTreeMap<Position, PositionAccumulator>) -> Vec<OCRPage> {
     let mut by_page: BTreeMap<u32, Vec<(u32, OCRLine)>> = BTreeMap::new();
 
@@ -346,15 +453,34 @@ fn to_bps(part: f32, total: f32) -> u32 {
 }
 
 fn normalize_for_vote(raw: &str) -> String {
-    // NFC normalization, then strip invisible control characters before clustering.
-    let nfc: String = raw.nfc().filter(|&c| !is_invisible(c)).collect();
+    normalize_for_variant(raw).to_lowercase()
+}
+
+fn normalize_for_variant(raw: &str) -> String {
+    harmonize_decimal_comma(&sanitize_variant_display(raw))
+}
+
+/// Sanitizes OCR text before storing variant display strings in cluster maps.
+///
+/// Rules:
+/// - Unicode NFC normalization
+/// - strip invisible zero-width/BOM chars
+/// - strip control chars except tab/newline/carriage-return
+/// - trim and collapse whitespace runs
+fn sanitize_variant_display(text: &str) -> String {
+    let nfc: String = text
+        .nfc()
+        .filter(|&c| {
+            !is_invisible(c) && (!c.is_control() || matches!(c, '\n' | '\t' | '\r'))
+        })
+        .collect();
+
     let trimmed = nfc.trim();
     if trimmed.is_empty() {
         return String::new();
     }
 
-    let collapsed = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
-    harmonize_decimal_comma(&collapsed)
+    trimmed.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Returns `true` if `c` is an invisible character that must be stripped before
@@ -468,7 +594,7 @@ pub fn emit_observation(
 
 #[cfg(test)]
 mod tests {
-    use super::{reduce_documents, FoldItem, InlineFoldState, PositionAccumulator};
+    use super::{reduce_documents, FoldItem, InlineFoldState, PositionAccumulator, SIM_THRESHOLD};
     use crate::ocrys::types::{OCRDocument, OCRLine, OCRPage};
 
     fn doc(source: &str, text: &str, confidence: f32) -> OCRDocument {
@@ -561,10 +687,10 @@ mod tests {
     fn leader_changes_when_stronger_candidate_arrives() {
         let mut pos = PositionAccumulator::default();
 
-        pos.add_vote("ALPHA".to_string(), 0.45);
+        pos.add_vote("alpha".to_string(), "ALPHA".to_string(), 0.45, SIM_THRESHOLD);
         assert_eq!(pos.winner_text, "ALPHA");
 
-        pos.add_vote("BETA".to_string(), 0.95);
+        pos.add_vote("beta".to_string(), "BETA".to_string(), 0.95, SIM_THRESHOLD);
         assert_eq!(pos.winner_text, "BETA");
     }
 
@@ -574,13 +700,15 @@ mod tests {
 
         state.ingest(FoldItem {
             position: (1, 1),
-            text: "ALPHA".to_string(),
+            cluster_key: "alpha".to_string(),
+            raw_variant: "ALPHA".to_string(),
             weight: 0.60,
             source: "a".to_string(),
         });
         state.ingest(FoldItem {
             position: (1, 1),
-            text: "BETA".to_string(),
+            cluster_key: "beta".to_string(),
+            raw_variant: "BETA".to_string(),
             weight: 0.55,
             source: "b".to_string(),
         });
@@ -588,7 +716,8 @@ mod tests {
 
         state.ingest(FoldItem {
             position: (1, 1),
-            text: "ALPHA".to_string(),
+            cluster_key: "alpha".to_string(),
+            raw_variant: "ALPHA".to_string(),
             weight: 0.90,
             source: "c".to_string(),
         });
@@ -603,7 +732,8 @@ mod tests {
 
         state.ingest(FoldItem {
             position: (1, 1),
-            text: "A".to_string(),
+            cluster_key: "a".to_string(),
+            raw_variant: "A".to_string(),
             weight: 0.90,
             source: "a".to_string(),
         });
@@ -611,7 +741,8 @@ mod tests {
 
         state.ingest(FoldItem {
             position: (1, 1),
-            text: "B".to_string(),
+            cluster_key: "b".to_string(),
+            raw_variant: "B".to_string(),
             weight: 0.90,
             source: "b".to_string(),
         });

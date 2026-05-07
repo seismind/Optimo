@@ -151,7 +151,7 @@ fn otsu_threshold(gray: GrayImage) -> GrayImage {
 
 /// Compute the Otsu threshold that maximises inter-class variance.
 ///
-/// Falls back to 128 if the image is empty or has uniform intensity.
+/// Falls back to 128 if the image is empty or has flat histogram (no separable classes).
 fn compute_otsu_threshold(gray: &GrayImage) -> u8 {
     let total = (gray.width() * gray.height()) as f64;
     if total == 0.0 {
@@ -199,6 +199,10 @@ fn compute_otsu_threshold(gray: &GrayImage) -> u8 {
         }
     }
 
+    if max_variance == 0.0 {
+        return 128;
+    }
+
     threshold
 }
 
@@ -214,16 +218,13 @@ mod tests {
 
     // ── Otsu internals ──────────────────────────────────────────────────────
 
-    /// A perfectly uniform image has no inter-class variance: threshold falls
-    /// back to 0 (the loop never finds a variance > 0). The important thing is
-    /// it does NOT panic.
+    /// A perfectly uniform image has no inter-class variance, so we use the
+    /// flat-histogram fallback threshold 128.
     #[test]
     fn otsu_uniform_image_does_not_panic() {
         let img = GrayImage::from_pixel(64, 64, Luma([200u8]));
         let t = compute_otsu_threshold(&img);
-        // All pixels at 200, so both classes can't exist simultaneously.
-        // The only valid threshold is somewhere ≤ 200.
-        assert!(t <= 200, "threshold={t} must be <= uniform intensity 200");
+        assert_eq!(t, 128, "uniform histogram must use fallback threshold 128");
     }
 
     /// A bimodal image (half pixels at 50, half at 200) has a clear valley.

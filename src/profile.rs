@@ -100,6 +100,17 @@ pub struct IngestionProfile {
     /// Lines below this threshold are dropped during normalization.
     /// Set to 0.0 to disable filtering.
     pub min_confidence: f64,
+
+    /// Fuzzy similarity threshold for clustering [0.0, 1.0].
+    ///
+    /// Two tokens are merged into the same cluster when their Jaro-Winkler
+    /// similarity meets or exceeds this value. Higher values = stricter
+    /// matching (fewer merges). Lower values = more aggressive merging.
+    ///
+    /// Recommended ranges:
+    ///   - Tesseract / Legacy : 0.90  (tolerant of OCR noise)
+    ///   - Carbo / Strict     : 0.95  (tighter; "Rck30" ≠ "Rck 30")
+    pub similarity_threshold: f64,
 }
 
 impl Default for IngestionProfile {
@@ -126,6 +137,7 @@ impl IngestionProfile {
             normalize_case: false, // "TRF", "EUR" etc are meaningful
             unicode_normalize: true,
             min_confidence: 0.55,
+            similarity_threshold: 0.90,
         }
     }
 
@@ -142,6 +154,7 @@ impl IngestionProfile {
             normalize_case: false,
             unicode_normalize: true,
             min_confidence: 0.80,
+            similarity_threshold: 0.95,
         }
     }
 
@@ -158,6 +171,7 @@ impl IngestionProfile {
             normalize_case: false,
             unicode_normalize: true,
             min_confidence: 0.0,
+            similarity_threshold: 0.90,
         }
     }
 
@@ -173,6 +187,7 @@ impl IngestionProfile {
             normalize_case: false,
             unicode_normalize: true,
             min_confidence: 0.95,
+            similarity_threshold: 0.95,
         }
     }
 

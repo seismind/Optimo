@@ -215,10 +215,12 @@ mod tests {
         // as incrementally applying them one by one via `update_from_document`.
         //
         // reduce_documents([A, B, C]) ≡ empty.update(A).update(B).update(C)
-        let source = "file://test.png";
-        let doc_a = make_doc(source, vec!["invoice", "2026"]);
-        let doc_b = make_doc(source, vec!["invoice", "2026"]);
-        let doc_c = make_doc(source, vec!["total", "1000"]);
+        // Use distinct sources so that the hard-idempotency dedup
+        // (position, cluster_key, source) fires correctly: doc_a and doc_b
+        // are different OCR runs of the same document and should both contribute.
+        let doc_a = make_doc("file://test_a.png", vec!["invoice", "2026"]);
+        let doc_b = make_doc("file://test_b.png", vec!["invoice", "2026"]);
+        let doc_c = make_doc("file://test_c.png", vec!["total", "1000"]);
 
         // Batch path: reduce all at once
         let all = fold::reduce_documents(vec![

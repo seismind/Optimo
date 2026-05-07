@@ -61,13 +61,34 @@ struct PositionAccumulator {
 }
 
 impl PositionAccumulator {
-    /// Adds a vote to the accumulator. Returns `true` if the vote merged into
-    /// an existing cluster (collision), or `false` if a new cluster was created.
-    fn add_vote(&mut self, cluster_key: String, raw_variant: String, weight: f32, sim_threshold: f64) -> bool {
-        let cluster_idx = self.find_cluster_index(&cluster_key, sim_threshold);
-        let is_collision = cluster_idx.is_some();
-        match cluster_idx {
-            Some(idx) => {
+    /// Adds a vote to the accumulator. Returns `Ok(true)` if the vote merged into
+    /// an existing cluster (collision), `Ok(false)` if a new cluster was created,
+    /// or `Err(SemanticVeto)` if a semantically close cluster was vetoed.
+    fn add_vote(&mut self, cluster_key: String, raw_variant: String, weight: f32, sim_threshold: f64) -> Result<bool, SemanticVeto> {
+        let cluster_result = self.find_cluster_index(&cluster_key, sim_threshold);
+        match cluster_result {
+            Err(veto) => {
+                // Semantic veto: create a new cluster but report the veto upstream.
+                self.clusters.push(VoteCluster {
+                    key: cluster_key,
+                    variants: {
+                        let mut variants = BTreeMap::new();
+                        variants.insert(
+                            raw_variant.clone(),
+                            VariantStats { total_weight: weight, count: 1 },
+                        );
+                        variants
+                    },
+                    winner_text: raw_variant,
+                    winner_weight: weight,
+                    winner_count: 1,
+                    total_weight: weight,
+                    count: 1,
+                });
+                self.recompute_winner();
+                return Err(veto);
+            }
+            Ok(Some(idx)) => {
                 let cluster = &mut self.clusters[idx];
                 cluster.total_weight += weight;
                 cluster.count = cluster.count.saturating_add(1);
@@ -76,16 +97,13 @@ impl PositionAccumulator {
                 variant.count = variant.count.saturating_add(1);
                 cluster.recompute_variant_winner();
             }
-            None => self.clusters.push(VoteCluster {
+            Ok(None) => self.clusters.push(VoteCluster {
                 key: cluster_key,
                 variants: {
                     let mut variants = BTreeMap::new();
                     variants.insert(
                         raw_variant.clone(),
-                        VariantStats {
-                            total_weight: weight,
-                            count: 1,
-                        },
+                        VariantStats { total_weight: weight, count: 1 },
                     );
                     variants
                 },
@@ -98,22 +116,30 @@ impl PositionAccumulator {
         }
 
         self.recompute_winner();
-        is_collision
+        Ok(cluster_result.unwrap().is_some())
     }
 
-    fn find_cluster_index(&self, cluster_key: &str, sim_threshold: f64) -> Option<usize> {
+    fn find_cluster_index(&self, cluster_key: &str, sim_threshold: f64) -> Result<Option<usize>, SemanticVeto> {
         let mut best_idx: Option<usize> = None;
         let mut best_sim = f64::MIN;
+        let mut vetoed_reason: Option<SemanticVeto> = None;
 
         for (idx, cluster) in self.clusters.iter().enumerate() {
             let sim = strsim::jaro_winkler(&cluster.key, cluster_key);
             if sim < sim_threshold {
                 continue;
             }
-            // Reject cross-script matches: Cyrillic homoglyphs must not silently
-            // merge with Latin lookalikes even when jaro_winkler exceeds threshold.
+            // Reject cross-script matches.
             if !same_script_family(&cluster.key, cluster_key) {
                 continue;
+            }
+            // Semantic guardrail: track *why* a merge was blocked.
+            match semantic_veto_reason(&cluster.key, cluster_key) {
+                Some(veto) => {
+                    vetoed_reason = Some(veto);
+                    continue;
+                }
+                None => {}
             }
 
             if sim > best_sim {
@@ -122,7 +148,15 @@ impl PositionAccumulator {
             }
         }
 
-        best_idx
+        // If we found a lexically close match that was only blocked by the
+        // semantic guardrail, return Err(veto) so the caller can count it.
+        if best_idx.is_none() {
+            if let Some(veto) = vetoed_reason {
+                return Err(veto);
+            }
+        }
+
+        Ok(best_idx)
     }
 
     fn alternatives(&self) -> Vec<CandidateVote> {
@@ -204,11 +238,15 @@ struct InlineFoldState {
     positions: BTreeMap<Position, PositionAccumulator>,
     convergence_sum_bps: u64,
     ambiguity_sum_bps: u64,
-    /// Step 2: total votes ingested (after Step 1 dedup).
+    /// total votes ingested (after dedup).
     total_votes: u64,
-    /// Step 2: votes that merged into an existing cluster.
+    /// votes that merged into an existing cluster.
     collisions: u64,
-    /// Step 3: fuzzy similarity threshold forwarded to PositionAccumulator.
+    /// votes blocked by a semantic veto due to negation mismatch.
+    negation_conflicts: u64,
+    /// votes blocked by a semantic veto due to numeric token mismatch.
+    numeric_conflicts: u64,
+    /// fuzzy similarity threshold forwarded to PositionAccumulator.
     sim_threshold: f64,
 }
 
@@ -226,6 +264,8 @@ impl InlineFoldState {
             ambiguity_sum_bps: 0,
             total_votes: 0,
             collisions: 0,
+            negation_conflicts: 0,
+            numeric_conflicts: 0,
             sim_threshold,
         }
     }
@@ -241,9 +281,11 @@ impl InlineFoldState {
             .ambiguity_sum_bps
             .saturating_sub(entry.ambiguity_score_bps as u64);
 
-        let is_collision = entry.add_vote(item.cluster_key, item.raw_variant, item.weight, self.sim_threshold);
-        if is_collision {
-            self.collisions += 1;
+        match entry.add_vote(item.cluster_key, item.raw_variant, item.weight, self.sim_threshold) {
+            Ok(true)  => { self.collisions += 1; }
+            Ok(false) => {}
+            Err(SemanticVeto::Negation) => { self.negation_conflicts += 1; }
+            Err(SemanticVeto::Numeric)  => { self.numeric_conflicts += 1; }
         }
 
         self.convergence_sum_bps = self
@@ -376,6 +418,9 @@ pub fn reduce_documents_with_profile(
         ambiguity_score_bps,
         cluster_groups,
         collision_rate_bps: fold_state.collision_rate_bps(),
+        semantic_conflict_count: (fold_state.negation_conflicts + fold_state.numeric_conflicts) as u32,
+        negation_conflicts: fold_state.negation_conflicts as u32,
+        numeric_conflicts: fold_state.numeric_conflicts as u32,
     })
 }
 fn build_pages(results: &BTreeMap<Position, PositionAccumulator>) -> Vec<OCRPage> {
@@ -507,6 +552,55 @@ fn same_script_family(a: &str, b: &str) -> bool {
         s.chars().any(|c| ('\u{0400}'..='\u{04FF}').contains(&c))
     }
     has_cyrillic(a) == has_cyrillic(b)
+}
+
+/// Reason why a semantic guardrail vetoed a cluster merge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SemanticVeto {
+    /// Negation token present in one key but not the other (e.g. "non pagato" vs "pagato").
+    Negation,
+    /// Numeric tokens present in both keys but with different values (e.g. IDs, amounts).
+    Numeric,
+}
+
+/// Returns `Some(veto)` if the merge should be blocked for semantic reasons,
+/// `None` if the merge is safe.
+fn semantic_veto_reason(a: &str, b: &str) -> Option<SemanticVeto> {
+    if has_negation_marker(a) != has_negation_marker(b) {
+        return Some(SemanticVeto::Negation);
+    }
+    let nums_a = extract_numeric_tokens(a);
+    let nums_b = extract_numeric_tokens(b);
+    if !nums_a.is_empty() && !nums_b.is_empty() && nums_a != nums_b {
+        return Some(SemanticVeto::Numeric);
+    }
+    None
+}
+
+fn has_negation_marker(s: &str) -> bool {
+    s.split_whitespace().any(|tok| tok == "non")
+}
+
+fn extract_numeric_tokens(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+
+    for ch in s.chars() {
+        if ch.is_ascii_digit() || ch == '.' {
+            cur.push(ch);
+        } else if !cur.is_empty() {
+            if cur.chars().any(|c| c.is_ascii_digit()) {
+                out.push(cur.clone());
+            }
+            cur.clear();
+        }
+    }
+
+    if !cur.is_empty() && cur.chars().any(|c| c.is_ascii_digit()) {
+        out.push(cur);
+    }
+
+    out
 }
 
 fn harmonize_decimal_comma(s: &str) -> String {
@@ -687,10 +781,10 @@ mod tests {
     fn leader_changes_when_stronger_candidate_arrives() {
         let mut pos = PositionAccumulator::default();
 
-        pos.add_vote("alpha".to_string(), "ALPHA".to_string(), 0.45, SIM_THRESHOLD);
+        let _ = pos.add_vote("alpha".to_string(), "ALPHA".to_string(), 0.45, SIM_THRESHOLD);
         assert_eq!(pos.winner_text, "ALPHA");
 
-        pos.add_vote("beta".to_string(), "BETA".to_string(), 0.95, SIM_THRESHOLD);
+        let _ = pos.add_vote("beta".to_string(), "BETA".to_string(), 0.95, SIM_THRESHOLD);
         assert_eq!(pos.winner_text, "BETA");
     }
 

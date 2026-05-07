@@ -20,4 +20,5 @@ pub mod persistence;
 pub mod pipeline;
 pub mod fold_properties;
 pub mod fold_adversarial;
+pub mod fold_semantic_drift;
 pub mod operational_policy;

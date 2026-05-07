@@ -19,6 +19,7 @@ mod pipeline;
 mod fold;
 mod fold_properties;
 mod fold_adversarial;
+mod fold_semantic_drift;
 mod timequake;
 mod observation;
 mod operational_policy;

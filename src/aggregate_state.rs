@@ -30,6 +30,15 @@ pub struct ReducerState {
     /// Populated by `fold::reduce_documents`; 0 when rehydrated from a snapshot.
     #[serde(default)]
     pub collision_rate_bps: u32,
+    /// Total number of semantic-guardrail vetoes (negation + numeric combined).
+    #[serde(default)]
+    pub semantic_conflict_count: u32,
+    /// Vetoes caused by a negation-token mismatch (e.g. "non pagato" vs "pagato").
+    #[serde(default)]
+    pub negation_conflicts: u32,
+    /// Vetoes caused by incompatible numeric tokens (IDs, amounts, quantities).
+    #[serde(default)]
+    pub numeric_conflicts: u32,
 }
 
 /// Canonical aggregate output of the algebraic fold.
@@ -50,6 +59,9 @@ impl ReducerState {
             ambiguity_score_bps: 0,
             cluster_groups: BTreeMap::new(),
             collision_rate_bps: 0,
+            semantic_conflict_count: 0,
+            negation_conflicts: 0,
+            numeric_conflicts: 0,
         }
     }
 
@@ -190,6 +202,9 @@ impl ReducerState {
             ambiguity_score_bps: SCORE_SCALE,
             cluster_groups,
             collision_rate_bps: 0,
+            semantic_conflict_count: 0,
+            negation_conflicts: 0,
+            numeric_conflicts: 0,
         };
 
         state.rebuild_pages();

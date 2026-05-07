@@ -236,9 +236,9 @@ mod tests {
     /// We assert the similarity at test time to make the fixture self-documenting.
     #[test]
     fn clustering_at_threshold_merges() {
-        // "invoice2026" vs "invoice2027": differ only in last digit, high similarity
-        let s1 = "invoice2026";
-        let s2 = "invoice2027";
+        // Non-numeric near-match: should merge by lexical threshold alone.
+        let s1 = "invoicealpha";
+        let s2 = "invoicealpba";
         let sim = strsim::jaro_winkler(s1, s2);
         assert!(sim >= 0.90,
             "test fixture: jaro_winkler({s1:?},{s2:?})={sim:.4} must be >= 0.90");

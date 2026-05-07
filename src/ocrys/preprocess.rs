@@ -65,6 +65,24 @@ pub struct Roi {
     pub resize: Option<(u32, u32)>,
 }
 
+/// Observability record for a single preprocessing run.
+///
+/// Populated by [`preprocess_roi`] and attached to every [`PreprocessedRegion`].
+/// Useful for ROI quality validation, pipeline debugging, and replay audits.
+#[derive(Debug, Clone)]
+pub struct PreprocessMetrics {
+    /// Width × height of the source image before any crop.
+    pub original_dimensions: (u32, u32),
+    /// Width × height of the extracted ROI (after crop, before resize).
+    pub roi_dimensions: (u32, u32),
+    /// The Otsu threshold value applied during binarisation.
+    /// `None` only if the image is empty (Otsu fallback path).
+    pub threshold_used: Option<u8>,
+    /// Scale factor applied to the ROI width when resizing (`target_w / roi_w`).
+    /// `None` when no resize was requested.
+    pub resize_factor: Option<f32>,
+}
+
 /// A preprocessed image region ready to feed into Tesseract.
 #[derive(Debug)]
 pub struct PreprocessedRegion {
@@ -74,6 +92,8 @@ pub struct PreprocessedRegion {
     pub kind: RegionKind,
     /// Original ROI definition (for provenance / logging).
     pub roi: Roi,
+    /// Observability metrics captured during preprocessing.
+    pub metrics: PreprocessMetrics,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -95,16 +115,30 @@ pub fn preprocess_roi(source: &Path, roi: &Roi, out_dir: &Path) -> Result<Prepro
     let img = image::open(source)
         .with_context(|| format!("failed to load image: {}", source.display()))?;
 
+    let original_dimensions = (img.width(), img.height());
+
     // 2. Crop — immutable: does not mutate the source buffer
     let cropped: DynamicImage = img.crop_imm(roi.x, roi.y, roi.width, roi.height);
+    let roi_dimensions = (cropped.width(), cropped.height());
 
     // 3. Grayscale
     let gray: GrayImage = cropped.into_luma8();
 
-    // 4. Otsu binary threshold
-    let binary: GrayImage = otsu_threshold(gray);
+    // 4. Otsu binary threshold — capture the threshold value for metrics
+    let threshold_used = if gray.width() * gray.height() == 0 {
+        None
+    } else {
+        Some(compute_otsu_threshold(&gray))
+    };
+    let binary: GrayImage = match threshold_used {
+        Some(t) => apply_threshold(&gray, t),
+        None    => gray,
+    };
 
     // 5. Optional resize
+    let resize_factor = roi.resize.map(|(target_w, _)| {
+        if roi_dimensions.0 == 0 { 1.0 } else { target_w as f32 / roi_dimensions.0 as f32 }
+    });
     let final_img: GrayImage = match roi.resize {
         Some((w, h)) => DynamicImage::ImageLuma8(binary)
             .resize_exact(w, h, FilterType::Lanczos3)
@@ -127,6 +161,12 @@ pub fn preprocess_roi(source: &Path, roi: &Roi, out_dir: &Path) -> Result<Prepro
         path: out_path,
         kind: roi.kind,
         roi: roi.clone(),
+        metrics: PreprocessMetrics {
+            original_dimensions,
+            roi_dimensions,
+            threshold_used,
+            resize_factor,
+        },
     })
 }
 
@@ -134,15 +174,14 @@ pub fn preprocess_roi(source: &Path, roi: &Roi, out_dir: &Path) -> Result<Prepro
 // Internal: Otsu's thresholding
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Apply Otsu's threshold to a grayscale image, returning a binary image.
+/// Apply a fixed threshold to a grayscale image, returning a binary image.
 ///
 /// Pixels **above** the threshold → 255 (white background).
 /// Pixels **at or below** the threshold → 0 (black foreground).
 ///
 /// This polarity is correct for documents: dark ink on bright paper becomes
 /// fully black-on-white, which is what Tesseract expects.
-fn otsu_threshold(gray: GrayImage) -> GrayImage {
-    let t = compute_otsu_threshold(&gray);
+fn apply_threshold(gray: &GrayImage, t: u8) -> GrayImage {
     ImageBuffer::from_fn(gray.width(), gray.height(), |x, y| {
         let Luma([v]) = *gray.get_pixel(x, y);
         Luma([if v > t { 255u8 } else { 0u8 }])
@@ -335,5 +374,29 @@ mod tests {
         };
 
         assert!(preprocess_roi(&src, &roi, &out).is_ok());
+    }
+
+    /// Metrics fields are populated correctly for a crop+resize run.
+    #[test]
+    fn preprocess_roi_metrics_populated() {
+        let tmp = tempdir().unwrap();
+        let src = white_png(tmp.path()); // 200×200 white image
+        let out = tmp.path().join("out");
+
+        let roi = Roi {
+            x: 10, y: 20, width: 100, height: 80,
+            kind: RegionKind::InvoiceTotals,
+            resize: Some((200, 160)),
+        };
+
+        let result = preprocess_roi(&src, &roi, &out).unwrap();
+        let m = &result.metrics;
+
+        assert_eq!(m.original_dimensions, (200, 200), "source dimensions");
+        assert_eq!(m.roi_dimensions, (100, 80), "roi dimensions after crop");
+        // Uniform white image → Otsu fallback → threshold_used = Some(128)
+        assert_eq!(m.threshold_used, Some(128), "uniform image must use Otsu fallback");
+        // resize_factor = target_w / roi_w = 200 / 100 = 2.0
+        assert!((m.resize_factor.unwrap() - 2.0).abs() < f32::EPSILON, "resize_factor must be 2.0");
     }
 }

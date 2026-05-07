@@ -76,10 +76,15 @@ pub struct ReducerSnapshot {
     pub created_at: DateTime<Utc>,
 
     /// Extracted text lines — typed, ordered, SQLite-row-ready.
+    /// `#[serde(default)]` ensures old snapshots without this field deserialize
+    /// as empty rather than failing — schema_version guards replay validity.
+    #[serde(default)]
     pub lines: Vec<SnapshotLine>,
 
     /// Deterministic fingerprint: hash(document_id, sorted lines, iterations).
     /// Stable across re-runs given identical input.
+    /// `#[serde(default)]` tolerates old snapshots that predate the hash field.
+    #[serde(default)]
     pub content_hash: Uuid,
 
     /// Convergence confidence in [0.0, 1.0].
@@ -93,6 +98,7 @@ pub struct ReducerSnapshot {
     #[serde(default)]
     pub rehydration: Option<ReducerRehydrationState>,
 
+    #[serde(default)]
     pub schema_version: u32,
 }
 

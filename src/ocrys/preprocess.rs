@@ -246,6 +246,111 @@ fn compute_otsu_threshold(gray: &GrayImage) -> u8 {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Full-page variant preprocessing (pipeline entry point)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Preprocess a full-page image for a named OCR variant and save the result.
+///
+/// Each variant applies a different perceptual transformation so that the
+/// three OCR runs fed to the reducer are genuinely different inputs, not
+/// three copies of the same image.
+///
+/// | variant          | transformation                                              |
+/// |-----------------|-------------------------------------------------------------|
+/// | `original`      | Grayscale only — natural luminance, minimal processing.     |
+/// | `high_contrast` | Grayscale + Otsu binary threshold (aggressive B&W).         |
+/// | `rotated`       | Grayscale + downsample 60% (Nearest) + upsample (Lanczos3)  |
+/// |                 | — simulates low-res scan with interpolation artifacts.      |
+/// | _fallback_      | Grayscale only (same as `original`).                        |
+pub fn preprocess_for_variant(
+    source: &Path,
+    variant: &str,
+    out_dir: &Path,
+) -> Result<(PathBuf, PreprocessMetrics)> {
+    let img = image::open(source)
+        .with_context(|| format!("failed to load image for preprocessing: {}", source.display()))?;
+
+    let original_dimensions = (img.width(), img.height());
+
+    std::fs::create_dir_all(out_dir)
+        .context("failed to create preprocessing output directory")?;
+
+    match variant {
+        "original" => {
+            let gray = img.into_luma8();
+            let out_path = out_dir.join("preproc_original.png");
+            gray.save(&out_path)
+                .with_context(|| format!("failed to save {}", out_path.display()))?;
+            Ok((out_path, PreprocessMetrics {
+                original_dimensions,
+                roi_dimensions: original_dimensions,
+                threshold_used: None,
+                resize_factor: None,
+            }))
+        }
+
+        "high_contrast" => {
+            // Otsu binarization: maximises inter-class contrast.
+            // Coloured backgrounds (salmon, beige) become fully white or fully
+            // black depending on their luminance, stressing thin strokes and
+            // low-contrast labels.
+            let gray = img.into_luma8();
+            let t = compute_otsu_threshold(&gray);
+            let binary = apply_threshold(&gray, t);
+            let out_path = out_dir.join("preproc_high_contrast.png");
+            binary.save(&out_path)
+                .with_context(|| format!("failed to save {}", out_path.display()))?;
+            Ok((out_path, PreprocessMetrics {
+                original_dimensions,
+                roi_dimensions: original_dimensions,
+                threshold_used: Some(t),
+                resize_factor: None,
+            }))
+        }
+
+        "rotated" => {
+            // Simulate low-resolution scan: downsample to 60% with nearest-neighbour
+            // (pixelation/aliasing), then upsample back with Lanczos3 (blurring).
+            // Degrades fine detail — numbers and dense text become harder to read
+            // without destroying semantic meaning.
+            let (w, h) = original_dimensions;
+            let small_w = ((w as f32 * 0.6) as u32).max(1);
+            let small_h = ((h as f32 * 0.6) as u32).max(1);
+            let gray = img.into_luma8();
+            let downsampled = DynamicImage::ImageLuma8(gray)
+                .resize_exact(small_w, small_h, FilterType::Nearest)
+                .into_luma8();
+            let restored = DynamicImage::ImageLuma8(downsampled)
+                .resize_exact(w, h, FilterType::Lanczos3)
+                .into_luma8();
+            let out_path = out_dir.join("preproc_rotated.png");
+            restored.save(&out_path)
+                .with_context(|| format!("failed to save {}", out_path.display()))?;
+            Ok((out_path, PreprocessMetrics {
+                original_dimensions,
+                roi_dimensions: (small_w, small_h),
+                threshold_used: None,
+                resize_factor: Some(0.6),
+            }))
+        }
+
+        other => {
+            // Unknown variant — fall back to grayscale so the pipeline never hard-fails.
+            let gray = img.into_luma8();
+            let out_path = out_dir.join(format!("preproc_{}.png", other));
+            gray.save(&out_path)
+                .with_context(|| format!("failed to save {}", out_path.display()))?;
+            Ok((out_path, PreprocessMetrics {
+                original_dimensions,
+                roi_dimensions: original_dimensions,
+                threshold_used: None,
+                resize_factor: None,
+            }))
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
 

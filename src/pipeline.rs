@@ -22,6 +22,7 @@ use crate::app_state::AppState;
 use crate::fold;
 use crate::ocrys;
 use crate::ocrys::normalize;
+use crate::ocrys::preprocess;
 use crate::ocrys::types::OCRDocument;
 use crate::persistence::{StateBridge, SqliteStore};
 use crate::profile::IngestionProfile;
@@ -43,6 +44,18 @@ pub async fn process_documents(state: &AppState, docs: Vec<PathBuf>) -> Result<(
 
     while let Some(res) = set.join_next().await {
         let (reducer_state, raw_observations) = res.context("task join failed")??;
+
+        eprintln!(
+            "[optimo] source={} iterations={} convergence={} ambiguity={} collision_rate={} semantic_conflicts={} (neg={} num={})",
+            reducer_state.source,
+            reducer_state.iterations,
+            reducer_state.convergence_score_bps,
+            reducer_state.ambiguity_score_bps,
+            reducer_state.collision_rate_bps,
+            reducer_state.semantic_conflict_count,
+            reducer_state.negation_conflicts,
+            reducer_state.numeric_conflicts,
+        );
 
         // Persist raw observations FIRST — audit trail before any derived data.
         for obs in &raw_observations {
@@ -98,12 +111,29 @@ fn cpu_map_reduce_ocr(
     let variants = vec!["original", "high_contrast", "rotated"];
 
     // ---- MAP ----
-    // Produce (raw_doc, normalized_doc) in parallel per variant.
+    // Each variant applies a different perceptual transformation before OCR so
+    // the reducer receives genuinely different inputs and produces a real
+    // convergence score rather than a trivial 10000.
     let pairs: Vec<(OCRDocument, OCRDocument, String)> =
         variants
             .par_iter()
             .map(|variant| {
-                let raw_doc = ocrys::run_ocr(doc, run_dir, lang, variant)
+                // 1. Preprocess: transform the image for this variant.
+                let (preprocessed_path, metrics) =
+                    preprocess::preprocess_for_variant(doc, variant, run_dir)
+                        .with_context(|| format!("preprocessing failed for variant {}", variant))?;
+
+                eprintln!(
+                    "[optimo] preprocess variant={} orig={}x{} roi={}x{} threshold={:?} resize={:?}",
+                    variant,
+                    metrics.original_dimensions.0, metrics.original_dimensions.1,
+                    metrics.roi_dimensions.0,      metrics.roi_dimensions.1,
+                    metrics.threshold_used,
+                    metrics.resize_factor,
+                );
+
+                // 2. Run OCR on the preprocessed image (not the original).
+                let raw_doc = ocrys::run_ocr(&preprocessed_path, run_dir, lang, variant)
                     .with_context(|| format!("OCR failed for variant {}", variant))?;
                 let normalized_doc = normalize::normalize_document_with_profile(&raw_doc, profile);
                 Ok((raw_doc, normalized_doc, variant.to_string()))

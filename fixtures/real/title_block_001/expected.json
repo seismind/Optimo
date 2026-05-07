@@ -1,0 +1,47 @@
+{
+  "fixture_id": "title_block_001",
+  "description": "Clean title block from a construction drawing — canonical OCR robustness benchmark",
+  "source_image": "cartiglio.png",
+  "image_dimensions": { "width": 969, "height": 477 },
+  "language": "ita",
+  "profile": "tesseract",
+  "variants": ["original", "high_contrast", "rotated"],
+
+  "observed_metrics": {
+    "convergence_score_bps": 6666,
+    "ambiguity_score_bps": 2856,
+    "collision_rate_bps": 2631,
+    "semantic_conflicts": 0,
+    "negation_conflicts": 0,
+    "numeric_conflicts": 0,
+    "iterations": 3
+  },
+
+  "metric_bounds": {
+    "convergence_floor_bps": 6000,
+    "ambiguity_ceiling_bps": 4000,
+    "collision_rate_ceiling_bps": 3500,
+    "semantic_conflicts_expected": 0
+  },
+
+  "consensus_fields": {
+    "date":              { "value": "05/06/2020",    "note": "ISO-like date from title block; stable across all 3 variants" },
+    "descrizione_label": { "value": "DESCRIZIONE :", "note": "header label; stable" },
+    "nome_file_label":   { "value": "NOME FILE :",   "note": "header label; stable" },
+    "materiale_label":   { "value": "MATERIALE :",   "note": "header label; stable" },
+    "num_disegno_label": { "value": "NUM. DISEGNO",  "note": "drawing number label; stable" },
+    "foglio":            { "value": "FOGLIO 1 DI 1", "note": "sheet identifier; stable in original and high_contrast, near-stable in rotated" }
+  },
+
+  "known_ocr_gaps": {
+    "scale":     { "value": null, "note": "SCALE: 1:2 corrupted to 'de:' / '1 dor)' — small text lost under downsampling" },
+    "revision":  { "value": null, "note": "REV cell not extracted by any variant" },
+    "massa":     { "value": null, "note": "MASSA: field disappears under downsampling in rotated variant" },
+    "finitura":  { "value": null, "note": "FINITURA SUP: field disappears under downsampling in rotated variant" },
+    "lavorazioni": { "value": null, "note": "salmon-background header: low contrast survives Otsu but text not detected" }
+  },
+
+  "replay_equivalence": true,
+
+  "notes": "convergence=6666 is NOT a failure. It is the first real perception entropy measurement — partial semantic convergence under 3 genuinely different perceptual transforms. This is the canonical floor for this fixture."
+}

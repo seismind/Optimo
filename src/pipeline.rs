@@ -133,8 +133,13 @@ fn cpu_map_reduce_ocr(
                 );
 
                 // 2. Run OCR on the preprocessed image (not the original).
-                let raw_doc = ocrys::run_ocr(&preprocessed_path, run_dir, lang, variant)
+                let mut raw_doc = ocrys::run_ocr(&preprocessed_path, run_dir, lang, variant)
                     .with_context(|| format!("OCR failed for variant {}", variant))?;
+
+                // Keep reducer identity tied to the original input document,
+                // not to transient run_dir artifacts (preproc_*.png).
+                raw_doc.source = source.clone();
+
                 let normalized_doc = normalize::normalize_document_with_profile(&raw_doc, profile);
                 Ok((raw_doc, normalized_doc, variant.to_string()))
             })

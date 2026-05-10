@@ -219,8 +219,19 @@ impl ReducerState {
             );
         }
 
-        let expected_lines = state.as_snapshot_lines();
-        let expected_hash = compute_content_hash(state.document_id, &expected_lines, state.iterations);
+        // Integrity check must be computed against the persisted projection
+        // (`snapshot.lines`). Rehydration payload is intentionally minimal and
+        // may not preserve all tie-break details needed to reconstruct the
+        // exact same winners byte-for-byte.
+        let expected_hash = if !snapshot.lines.is_empty() {
+            compute_content_hash(snapshot.document_id, &snapshot.lines, snapshot.iterations)
+        } else {
+            // Legacy snapshots may not have `lines`; fallback to the
+            // rehydrated projection for backwards compatibility.
+            let expected_lines = state.as_snapshot_lines();
+            compute_content_hash(state.document_id, &expected_lines, state.iterations)
+        };
+
         if snapshot.content_hash != Uuid::nil() && snapshot.content_hash != expected_hash {
             anyhow::bail!(
                 "snapshot content_hash mismatch: expected={}, got={}",

@@ -22,4 +22,5 @@ pub mod fold_properties;
 pub mod fold_adversarial;
 pub mod fold_semantic_drift;
 pub mod fold_ocr_stability;
+pub mod roi_analysis;
 pub mod operational_policy;

@@ -13,6 +13,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use rayon::prelude::*;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tokio::task::{spawn_blocking, JoinSet};
 use uuid::Uuid;
@@ -195,6 +196,114 @@ fn cpu_map_reduce_ocr(
         None
     };
 
+    // ---- PASS 3: Execute ROI plan and merge targeted refinement ----
+    if let Some(plan) = &roi_plan {
+        if !plan.merged_regions.is_empty() {
+            let sparse_refinement = execute_roi_refinement(
+                doc,
+                run_dir,
+                lang,
+                profile,
+                plan,
+                &source,
+            )?;
+            reduced_state.update_from_document(sparse_refinement);
+        }
+    }
+
     Ok((reduced_state, raw_observations, roi_plan))
+}
+
+/// PASS 3 execution:
+/// - run OCR deterministically for each preprocess hint used in the ROI plan
+/// - extract only targeted line ranges from those OCR outputs
+/// - build a sparse document preserving original line indices
+/// - return the sparse document so reducer can merge refined observations
+fn execute_roi_refinement(
+    doc: &PathBuf,
+    run_dir: &PathBuf,
+    lang: &str,
+    profile: &IngestionProfile,
+    plan: &roi_analysis::ROIPlan,
+    source: &str,
+) -> Result<OCRDocument> {
+    // Cache one OCR document per variant used by the plan.
+    let mut variant_docs: BTreeMap<String, OCRDocument> = BTreeMap::new();
+
+    for region in &plan.merged_regions {
+        let variant = variant_for_hint(&region.preprocess_hint);
+        if variant_docs.contains_key(variant) {
+            continue;
+        }
+
+        let variant_label = format!("{}_roi", variant);
+        let (preprocessed_path, _) = preprocess::preprocess_for_variant(doc, variant, run_dir)
+            .with_context(|| format!("preprocessing failed for ROI variant {}", variant))?;
+        let mut raw_doc = ocrys::run_ocr(&preprocessed_path, run_dir, lang, &variant_label)
+            .with_context(|| format!("ROI OCR failed for variant {}", variant))?;
+        raw_doc.source = source.to_string();
+        let normalized_doc = normalize::normalize_document_with_profile(&raw_doc, profile);
+        variant_docs.insert(variant.to_string(), normalized_doc);
+    }
+
+    // Sparse page buffers: page_number -> vec[line_text], keeping 1-indexed line positions.
+    let mut page_buffers: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+
+    for region in &plan.merged_regions {
+        let variant = variant_for_hint(&region.preprocess_hint);
+        let Some(doc_for_variant) = variant_docs.get(variant) else {
+            continue;
+        };
+
+        let page_number = region.page as usize;
+        let Some(src_page) = doc_for_variant.pages.iter().find(|p| p.page_number == page_number) else {
+            continue;
+        };
+
+        let start = region.line_range.0.max(1) as usize;
+        let end = (region.line_range.1 as usize).min(src_page.lines.len());
+        if start > end {
+            continue;
+        }
+
+        let buffer = page_buffers.entry(page_number).or_default();
+        if buffer.len() < end {
+            buffer.resize(end, String::new());
+        }
+
+        for idx in start..=end {
+            let candidate = src_page.lines[idx - 1].text.clone();
+            if !candidate.is_empty() {
+                // Keep deterministic first-write semantics per line position.
+                if buffer[idx - 1].is_empty() {
+                    buffer[idx - 1] = candidate;
+                }
+            }
+        }
+    }
+
+    let pages = page_buffers
+        .into_iter()
+        .map(|(page_number, lines)| crate::ocrys::types::OCRPage {
+            page_number,
+            lines: lines
+                .into_iter()
+                .map(|text| crate::ocrys::types::OCRLine { text, confidence: None })
+                .collect(),
+        })
+        .collect();
+
+    Ok(OCRDocument {
+        source: source.to_string(),
+        pages,
+    })
+}
+
+fn variant_for_hint(hint: &roi_analysis::PreprocessHint) -> &'static str {
+    match hint {
+        roi_analysis::PreprocessHint::HighContrast => "high_contrast",
+        roi_analysis::PreprocessHint::Original => "original",
+        roi_analysis::PreprocessHint::Rotated => "rotated",
+    }
 }
 

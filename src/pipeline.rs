@@ -26,6 +26,7 @@ use crate::ocrys::preprocess;
 use crate::ocrys::types::OCRDocument;
 use crate::persistence::{StateBridge, SqliteStore};
 use crate::profile::IngestionProfile;
+use crate::roi_analysis;
 use crate::snapshot::{RawObservation, SnapshotMetadata};
 
 /// Entry point from main.rs
@@ -43,7 +44,7 @@ pub async fn process_documents(state: &AppState, docs: Vec<PathBuf>) -> Result<(
     }
 
     while let Some(res) = set.join_next().await {
-        let (reducer_state, raw_observations) = res.context("task join failed")??;
+        let (reducer_state, raw_observations, roi_plan) = res.context("task join failed")??;
 
         eprintln!(
             "[optimo] source={} iterations={} convergence={} ambiguity={} collision_rate={} semantic_conflicts={} (neg={} num={})",
@@ -56,6 +57,10 @@ pub async fn process_documents(state: &AppState, docs: Vec<PathBuf>) -> Result<(
             reducer_state.negation_conflicts,
             reducer_state.numeric_conflicts,
         );
+
+        if let Some(plan) = &roi_plan {
+            eprintln!("[optimo] ROI_PLAN regions={} atoms={}", plan.merged_regions.len(), plan.atomic_count);
+        }
 
         // Persist raw observations FIRST — audit trail before any derived data.
         for obs in &raw_observations {
@@ -75,7 +80,7 @@ pub async fn process_documents(state: &AppState, docs: Vec<PathBuf>) -> Result<(
     Ok(())
 }
 
-async fn process_one_document(state: &AppState, doc: PathBuf) -> Result<(ReducerState, Vec<RawObservation>)> {
+async fn process_one_document(state: &AppState, doc: PathBuf) -> Result<(ReducerState, Vec<RawObservation>, Option<roi_analysis::ROIPlan>)> {
     // Extract only what the CPU worker needs
     let lang = state.ocr_lang.clone();
     let run_dir = state.ocr_run_dir("latest");
@@ -97,12 +102,13 @@ async fn process_one_document(state: &AppState, doc: PathBuf) -> Result<(Reducer
 /// Returns:
 ///   - ReducerState from normalized (canonical) documents
 ///   - Vec<RawObservation> with raw_text + normalized_text per variant
+///   - Option<ROIPlan> if numeric conflicts detected (PASS 2 execution plan)
 fn cpu_map_reduce_ocr(
     doc: &PathBuf,
     run_dir: &PathBuf,
     lang: &str,
     profile: &IngestionProfile,
-) -> Result<(ReducerState, Vec<RawObservation>)> {
+) -> Result<(ReducerState, Vec<RawObservation>, Option<roi_analysis::ROIPlan>)> {
     let source = doc.to_string_lossy().to_string();
     // document_id must match what ReducerState will derive from the source path.
     let document_id = Uuid::new_v5(&Uuid::NAMESPACE_URL, source.as_bytes());
@@ -164,8 +170,31 @@ fn cpu_map_reduce_ocr(
     // ---- REDUCE (delegated to reducer module) ----
     // Only the normalized documents flow into the reducer.
     let normalized_docs: Vec<_> = pairs.into_iter().map(|(_, norm, _)| norm).collect();
-    let reduced_state = fold::reduce_documents(normalized_docs)?;
+    let mut reduced_state = fold::reduce_documents(normalized_docs)?;
 
-    Ok((reduced_state, raw_observations))
+    // ---- PASS 1 → PASS 2: Generate ROIPlan for numeric conflicts ----
+    let roi_plan = if reduced_state.numeric_conflicts > 0 {
+        // Extract rehydration state (observations) from reducer.
+        let rehydration = reduced_state.rehydration_state();
+        // Observe numeric conflict zones.
+        let atomics = roi_analysis::observe_numeric_conflicts(&rehydration);
+        if !atomics.is_empty() {
+            // Merge into execution plan.
+            let padding = 2; // lines to add above/below conflict
+            let plan = roi_analysis::generate_roi_plan(
+                document_id,
+                atomics,
+                rehydration.source.clone(),
+                padding,
+            );
+            Some(plan)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    Ok((reduced_state, raw_observations, roi_plan))
 }
 

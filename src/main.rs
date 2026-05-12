@@ -23,6 +23,8 @@ mod fold_semantic_drift;
 mod timequake;
 mod observation;
 mod operational_policy;
+mod roi_analysis;
+mod fold_ocr_stability;
 
 #[tokio::main]
 async fn main() -> Result<()> {

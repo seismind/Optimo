@@ -307,7 +307,14 @@ impl ReducerState {
         self.convergence_score_bps = (convergence_sum / total_positions) as u32;
         self.ambiguity_score_bps = SCORE_SCALE.saturating_sub(self.convergence_score_bps);
     }
-}
+        /// Export the current reduction state as a rehydration payload for PASS 2 ROI analysis.
+        pub fn rehydration_state(&self) -> ReducerRehydrationState {
+            ReducerRehydrationState {
+                source: self.source.clone(),
+                cluster_groups: self.cluster_groups.clone(),
+            }
+        }
+    }
 
 fn normalize(s: &str) -> String {
     let lower = s.to_lowercase();

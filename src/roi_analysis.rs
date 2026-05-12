@@ -239,6 +239,25 @@ pub fn generate_roi_plan(
     }
 }
 
+/// Compute a stable hash of the ROIPlan for replay validation.
+/// Two plans are identical if their hash matches.
+pub fn plan_hash(plan: &ROIPlan) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    plan.document_id.hash(&mut hasher);
+    plan.atomic_count.hash(&mut hasher);
+    plan.rehydration_hash.hash(&mut hasher);
+    for region in &plan.merged_regions {
+        region.page.hash(&mut hasher);
+        region.line_range.0.hash(&mut hasher);
+        region.line_range.1.hash(&mut hasher);
+        (region.dominant_reason as u8).hash(&mut hasher);
+    }
+    format!("{:x}", hasher.finish())
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Returns the suggested preprocessing hint for a given conflict reason.
